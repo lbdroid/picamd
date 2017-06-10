@@ -2,7 +2,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <microhttpd.h>
@@ -18,6 +20,8 @@
 #define POSTBUFFERSIZE  512
 #define GET             0
 #define POST            1
+
+pid_t ffmpeg = 0;
 
 static int
 not_found_page (struct MHD_Connection *connection);
@@ -55,12 +59,60 @@ ok_page (struct MHD_Connection *connection)
 
 static int
 stop (struct MHD_Connection *connection){
-  return MHD_NO;
+  char emsg[1024];
+  struct MHD_Response *response;
+  int ret;
+
+  if (ffmpeg == 0)
+    snprintf(emsg, sizeof(emsg), "not started");
+  else {
+    int status;
+    pid_t pid = waitpid(ffmpeg, &status, WNOHANG);
+    if (pid == 0){
+      kill(ffmpeg, SIGTERM);
+      waitpid(ffmpeg, NULL, 0);
+      snprintf(emsg, sizeof(emsg), "terminated");
+    } else if (pid < 0)
+      snprintf(emsg, sizeof(emsg), "error");
+    else
+      snprintf(emsg, sizeof(emsg), "terminated");
+  }
+
+  response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
+  if (response == NULL)
+    return MHD_NO;
+  ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
+  MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/plain");
+  MHD_destroy_response (response);
+  return ret;
 }
 
 static int
 check (struct MHD_Connection *connection){
-  return MHD_NO;
+  char emsg[1024];
+  struct MHD_Response *response;
+  int ret;
+
+  if (ffmpeg == 0)
+    snprintf(emsg, sizeof(emsg), "not started");
+  else {
+    int status;
+    pid_t pid = waitpid(ffmpeg, &status, WNOHANG);
+    if (pid == 0)
+      snprintf(emsg, sizeof(emsg), "running");
+    else if (pid < 0)
+      snprintf(emsg, sizeof(emsg), "error");
+    else
+      snprintf(emsg, sizeof(emsg), "terminated");
+  }
+
+  response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
+  if (response == NULL)
+    return MHD_NO;
+  ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
+  MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/plain");
+  MHD_destroy_response (response);
+  return ret;
 }
 
 static ssize_t
@@ -207,18 +259,38 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 
   char pfilename[1024];
   snprintf(pfilename, 1023, "protected/%s", data);
+  char response[100];
 
-  if (strcmp(key,"protect") == 0)
-    rename(data, pfilename);
-  else if (strcmp(key,"unprotect") == 0)
-    rename(pfilename, data);
-  else if (strcmp(key,"record") == 0){
-    //TODO: data here will contain the the radio's current system time.
-    //  Must: (1) set the rpi's time, (2) fork/exec ffmpeg.
+  if (strcmp(key,"protect") == 0){
+    if (rename(data, pfilename) == 0)
+      snprintf(response,100,"protected\n");
+    else snprintf(response,100,"protect error\n");
+  } else if (strcmp(key,"unprotect") == 0){
+    if (rename(pfilename, data) == 0)
+      snprintf(response,100,"unprotected\n");
+    else snprintf(response,100,"unprotect error\n");
+  } else if (strcmp(key,"record") == 0){
+    int status;
+    if (ffmpeg == 0 || (ffmpeg > 0 && waitpid(ffmpeg, &status, WNOHANG) != 0)){
+      time_t current_time = atoi(data);
+      stime(&current_time); // update the system time with the value from the parameter,
+      ffmpeg = fork();
+      if (ffmpeg == 0){
+// /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -segment_time 60 -reset_timestamps 1 test%03d.mkv
+// /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -strftime 1 -segment_time 60 -segment_atclocktime 1 -reset_timestamps 1 cam_%Y-%m-%d_%H-%M-%S.mkv
+        static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video0","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video2","-c:v","copy","-map","0","-map","1","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
+        execv("/home/pi/bin/ffmpeg",argv);
+        exit(127);
+      } else if (ffmpeg < 0)
+        snprintf(response,100,"fork error\n");
+      else
+        snprintf(response,100,"fork success\n");
+    } else
+      snprintf(response,100,"ffmpeg already running\n");
   }
     
   con_info->answerstring = malloc(MAXANSWERSIZE);
-  snprintf(con_info->answerstring, MAXANSWERSIZE, "Request handled\n\n");
+  snprintf(con_info->answerstring, MAXANSWERSIZE, response);
 
   return MHD_YES;
 }
@@ -283,8 +355,6 @@ handle_request (void *cls,
       return MHD_YES;
     } else if (con_info->answerstring != NULL)
       return send_page (connection, con_info->answerstring);
-      //return protect(connection, upload_data, upload_data_size);
-    
   }
 
   else if (strcmp(url, "/stop") == 0)
