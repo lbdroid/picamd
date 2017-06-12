@@ -7,6 +7,8 @@
 #include <sys/wait.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <microhttpd.h>
 #include <stdio.h>
 #include <string.h>
@@ -401,23 +403,77 @@ handle_request (void *cls,
   return ret;
 }
 
+int compar(const struct dirent **pa, const struct dirent **pb){
+        struct dirent a, b;
+        a = **pa; b = **pb;
+	struct stat ainfo, binfo;
+	stat(a.d_name, &ainfo);
+	stat(b.d_name, &binfo);
+	if (ainfo.st_mtime == binfo.st_mtime) return 0;
+	else if (ainfo.st_mtime < binfo.st_mtime) return 1;
+	return -1;
+}
 
-int
-main (int argc, char *const *argv)
-{
+int filter(const struct dirent *d){
+	struct dirent a = *d;
+	struct stat ainfo;
+	stat(a.d_name, &ainfo);
+	if(S_ISREG(ainfo.st_mode)) return 1;
+	return 0;
+}
+
+int checkfree(){
+	struct statvfs stat;
+	long size, free;
+	float pfree;
+	if (statvfs(".", &stat) != 0) return -1;
+	size = stat.f_bsize * stat.f_blocks;
+	free = stat.f_bsize * stat.f_bfree;
+	pfree = ((float)free / (float)size) * 100.0;
+	return (int)pfree;
+}
+
+static void reap(){
+	struct dirent **namelist;
+	int n;
+	while (1){
+		n = scandir(".", &namelist, *filter, *compar);
+		if (n < 0) perror("scandir");
+		else {
+			while (n > 0 && checkfree() < 90) {
+				n--;
+				//TODO: activate reaper by uncommenting next line:
+				//unlink(namelist[n]->d_name);
+				free(namelist[n]);
+			}
+			free(namelist);
+		}
+		sleep (5*60); // sleep for 5 minutes
+	}
+}
+
+int main (int argc, char *const *argv){
   struct MHD_Daemon *d;
+  pid_t reaper;
 
-  if (argc != 2)
-    {
-      printf ("%s PORT\n", argv[0]);
-      return 1;
-    }
-  d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG,
-                        atoi (argv[1]),
-                        NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
-  if (NULL == d)
+  if (argc != 2) {
+    printf ("%s PORT\n", argv[0]);
     return 1;
+  }
+
+  d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG,
+                        atoi (argv[1]), NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
+  if (d == NULL) return 1;
+
+  reaper = fork();
+  if (reaper == 0) reap();
+
   (void) getc (stdin);
+  // stop everything.
+  kill(ffmpeg, SIGTERM);
+  waitpid(ffmpeg, NULL, 0);
+  kill(reaper, SIGKILL);
+  waitpid(reaper, NULL, 0);
   MHD_stop_daemon (d);
   return 0;
 }
