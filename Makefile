@@ -1,13 +1,13 @@
 CC = gcc
 LIBS = -lmicrohttpd
 
-all: picam
+all: picamd
 
-picam.o: picam.c
-	$(CC) -g -c picam.c
+picamd.o: picamd.c
+	$(CC) -g -c picamd.c
 
-picam: picam.o
-	$(CC) -g -o picam picam.o $(LIBS)
+picamd: picamd.o
+	$(CC) -g -o picamd picamd.o $(LIBS)
 
 clean:
-	rm -f picam picam.o
+	rm -f picamd picamd.o
