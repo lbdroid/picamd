@@ -467,6 +467,10 @@ static void sig_shutdown(int signal){
 }
 
 int main (int argc, char *const *argv){
+	int daemonize = 1;
+	if (argc >= 2) for (int i=1; i<argc; i++) if (strcmp(argv[i],"--nodaemon") == 0) daemonize = 0;
+	if (daemonize) daemon(0,0);
+
 	struct MHD_Daemon *d;
 	pid_t reaper;
 
