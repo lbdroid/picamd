@@ -440,10 +440,10 @@ static void reap(){
 		n = scandir(".", &namelist, *filter, *compar);
 		if (n < 0) perror("scandir");
 		else {
-			while (n > 0 && checkfree() < 90) {
+			while (n > 0) {
 				n--;
 				//TODO: activate reaper by uncommenting next line:
-				//unlink(namelist[n]->d_name);
+				//if (checkfree() < 90) unlink(namelist[n]->d_name);
 				free(namelist[n]);
 			}
 			free(namelist);
