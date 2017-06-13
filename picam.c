@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/mount.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
@@ -23,10 +24,16 @@
 #define GET             0
 #define POST            1
 
-char *base;
 pid_t ffmpeg = 0;
 time_t lastbark;
 int terminate = 0;
+
+int port;
+char path[1024];
+char sdev[1024];
+int useWD;
+int hasRTC;
+int standalone;
 
 struct connection_info_struct {
 	int connectiontype;
@@ -86,7 +93,7 @@ send_page (struct MHD_Connection *connection, const char *page){
 static int
 isfsro(){
 	struct statvfs stat;
-	if (statvfs(".", &stat) != 0) return -1;
+	if (statvfs(path, &stat) != 0) return -1;
 	if (stat.f_flag & ST_RDONLY) return 1;
 	return 0;
 }
@@ -100,11 +107,13 @@ remountfs (int writable){
 	 * Second option; could just mount the data fs with MS_SYNCHRONOUS, then we will only lose a few
 	 * frames at the moment of power loss.
 
-	if (writable && isfsro())
-		mount ("/dev/sda1", "/", "ext4", MS_MGC_MASK | MS_REMOUNT, NULL);
+	if (writable && isfsro() && standalone)
+		mount(sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_SYNCHRONOUS, NULL);
+	else if (writable && isfsro())
+		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT, NULL);
 	else if (!writable && !isfsro()){
 		sync();
-		mount ("/dev/sda1", "/", "ext4", MS_MGC_MASK | MS_REMOUNT | MS_RDONLY, NULL);
+		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
 	}
 	*/
 }
@@ -256,10 +265,11 @@ list (struct MHD_Connection *connection){
 	int ret;
 	struct file_data *data = malloc(sizeof(struct file_data));
 
+	chdir(path);
 	data->np = scandir(".", &data->unprotected, *filter, *compar);
 	chdir("protected");
 	data->p = scandir(".", &data->protected, *filter, *compar);
-	chdir(base);
+	chdir(path);
 
 	data->rnp = 0;
 	data->rp = 0;
@@ -299,14 +309,17 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	} else if (strcmp(key,"record") == 0){
 		int status;
 		if (ffmpeg == 0 || (ffmpeg > 0 && waitpid(ffmpeg, &status, WNOHANG) != 0)){
-			time_t current_time = atoi(data);
-			stime(&current_time); // update the system time with the value from the parameter,
+			if (!hasRTC){
+				time_t current_time = atoi(data);
+				stime(&current_time); // update the system time with the value from the parameter,
+			}
 			lastbark = time(NULL);
 			ffmpeg = fork();
 			if (ffmpeg == 0){
 // /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -segment_time 60 -reset_timestamps 1 test%03d.mkv
 // /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -strftime 1 -segment_time 60 -segment_atclocktime 1 -reset_timestamps 1 cam_%Y-%m-%d_%H-%M-%S.mkv
  				if (fsro) remountfs(1);
+				chdir(path); // make sure that this child is actually in the proper path.
 				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video0","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video2","-c:v","copy","-map","0","-map","1","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
 				execv("/home/pi/bin/ffmpeg",argv);
 				remountfs(0);
@@ -423,7 +436,7 @@ int checkfree(){
 	struct statvfs stat;
 	long size, free;
 	float pfree;
-	if (statvfs(".", &stat) != 0) return -1;
+	if (statvfs(path, &stat) != 0) return -1;
 	size = stat.f_bsize * stat.f_blocks;
 	free = stat.f_bsize * stat.f_bfree;
 	pfree = ((float)free / (float)size) * 100.0;
@@ -434,7 +447,7 @@ static void reap(){
 	struct dirent **namelist;
 	int n;
 	while (1){
-		n = scandir(".", &namelist, *filter, *compar);
+		n = scandir(path, &namelist, *filter, *compar);
 		if (n < 0) perror("scandir");
 		else {
 			while (n > 0) {
@@ -457,12 +470,14 @@ int main (int argc, char *const *argv){
 	struct MHD_Daemon *d;
 	pid_t reaper;
 
-	if (argc != 2) {
-		printf ("%s PORT\n", argv[0]);
-		return 1;
-	}
+	port = 8888;
+	strcpy(sdev,"/dev/sda3");
+	strcpy(path,"/mnt/data");
+	useWD = 1;
+	hasRTC = 0;
+	standalone = 0;
 
-	base = getcwd(base,0);
+	char fsckcmd[1024];
 
 	struct sigaction sigact;
 	sigact.sa_handler = sig_shutdown;
@@ -470,8 +485,16 @@ int main (int argc, char *const *argv){
 	sigact.sa_flags = 0;
 	sigaction(SIGINT, &sigact, (struct sigaction *)NULL);
 
-	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG,
-                        atoi (argv[1]), NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
+	strcpy(fsckcmd, "fsck -a ");
+	strcat(fsckcmd, sdev);
+
+	chdir("/"); // change to rootfs
+	umount2(sdev,MNT_FORCE); // unmount existing fs if mounted
+	system(fsckcmd); // check and repair filesystem
+	mount(sdev, path, "ext4", MS_MGC_VAL | MS_RDONLY, ""); // mount fs readonly
+	chdir(path); // enter data fs
+
+	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
 	if (d == NULL) return 1;
 
 	reaper = fork();
@@ -479,7 +502,7 @@ int main (int argc, char *const *argv){
 
 	while (!terminate){
 		printf("lastbark: %lld\n",lastbark);
-		if (ffmpeg != 0 && lastbark < time(NULL) - (3*60)){
+		if (useWD && ffmpeg != 0 && lastbark < time(NULL) - (3*60)){
 			int status;
 			if (ffmpeg != 0 && waitpid(ffmpeg, &status, WNOHANG) == 0){
 				kill(ffmpeg, SIGTERM);
@@ -499,6 +522,9 @@ int main (int argc, char *const *argv){
 	kill(reaper, SIGKILL);
 	waitpid(reaper, NULL, 0);
 	MHD_stop_daemon (d);
+	chdir("/");
+	sync();
+	umount2(sdev,MNT_FORCE);
 
 	return 0;
 }
