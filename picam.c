@@ -25,6 +25,8 @@
 
 char *base;
 pid_t ffmpeg = 0;
+time_t lastbark;
+int terminate = 0;
 
 struct connection_info_struct {
 	int connectiontype;
@@ -82,6 +84,32 @@ send_page (struct MHD_Connection *connection, const char *page){
 }
 
 static int
+isfsro(){
+	struct statvfs stat;
+	if (statvfs(".", &stat) != 0) return -1;
+	if (stat.f_flag & ST_RDONLY) return 1;
+	return 0;
+}
+
+static void
+remountfs (int writable){
+	/* TODO: activate fs remount by uncommenting this function's body...
+	 * NOTE: http://wiki.psuter.ch/doku.php?id=solve_raspbian_sd_card_corruption_issues_with_read-only_mounted_root_partition
+	 * Also... we will shrink the rootfs as much as practical on the rpi, and create an additional data-only partition
+	 * for video files. We can then control the mounting and unmounting of the data partition here.
+	 * Second option; could just mount the data fs with MS_SYNCHRONOUS, then we will only lose a few
+	 * frames at the moment of power loss.
+
+	if (writable && isfsro())
+		mount ("/dev/sda1", "/", "ext4", MS_MGC_MASK | MS_REMOUNT, NULL);
+	else if (!writable && !isfsro()){
+		sync();
+		mount ("/dev/sda1", "/", "ext4", MS_MGC_MASK | MS_REMOUNT | MS_RDONLY, NULL);
+	}
+	*/
+}
+
+static int
 stop (struct MHD_Connection *connection){
 	char emsg[1024];
 	struct MHD_Response *response;
@@ -102,6 +130,8 @@ stop (struct MHD_Connection *connection){
 			snprintf(emsg, sizeof(emsg), "terminated");
 	}
 
+	remountfs(0);
+
 	response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
 	if (response == NULL)
 		return MHD_NO;
@@ -117,6 +147,8 @@ check (struct MHD_Connection *connection){
 	struct MHD_Response *response;
 	int ret;
 
+	lastbark = time(NULL);
+
 	if (ffmpeg == 0)
 		snprintf(emsg, sizeof(emsg), "not started");
 	else {
@@ -127,7 +159,7 @@ check (struct MHD_Connection *connection){
 		else if (pid < 0)
 			snprintf(emsg, sizeof(emsg), "error");
 		else
-		snprintf(emsg, sizeof(emsg), "terminated");
+			snprintf(emsg, sizeof(emsg), "terminated");
 	}
 
 	response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
@@ -250,26 +282,34 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	char pfilename[1024];
 	snprintf(pfilename, 1023, "protected/%s", data);
 	char response[100];
+	int fsro = isfsro();
 
 	if (strcmp(key,"protect") == 0){
+		if (fsro) remountfs(1);
 		if (rename(data, pfilename) == 0)
 			snprintf(response,100,"protected\n");
 		else snprintf(response,100,"protect error\n");
+		if (fsro) remountfs(0);
 	} else if (strcmp(key,"unprotect") == 0){
+		if (fsro) remountfs(1);
 		if (rename(pfilename, data) == 0)
 			snprintf(response,100,"unprotected\n");
 		else snprintf(response,100,"unprotect error\n");
+		if (fsro) remountfs(0);
 	} else if (strcmp(key,"record") == 0){
 		int status;
 		if (ffmpeg == 0 || (ffmpeg > 0 && waitpid(ffmpeg, &status, WNOHANG) != 0)){
 			time_t current_time = atoi(data);
 			stime(&current_time); // update the system time with the value from the parameter,
+			lastbark = time(NULL);
 			ffmpeg = fork();
 			if (ffmpeg == 0){
 // /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -segment_time 60 -reset_timestamps 1 test%03d.mkv
 // /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -strftime 1 -segment_time 60 -segment_atclocktime 1 -reset_timestamps 1 cam_%Y-%m-%d_%H-%M-%S.mkv
+ 				if (fsro) remountfs(1);
 				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video0","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video2","-c:v","copy","-map","0","-map","1","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
 				execv("/home/pi/bin/ffmpeg",argv);
+				remountfs(0);
 				exit(127);
 			} else if (ffmpeg < 0)
 				snprintf(response,100,"fork error\n");
@@ -334,7 +374,7 @@ handle_request (void *cls,
 
 	if (strstr(url, "favicon") != NULL) return not_found_page(connection); // tell anything asking for favicon to drop dead.
 
-	if (0 == strcmp (method, "POST")){
+	if (strcmp (method, "POST") == 0){
 		struct connection_info_struct *con_info = *con_cls;
 
 		if (*upload_data_size != 0){
@@ -409,6 +449,10 @@ static void reap(){
 	}
 }
 
+static void sig_shutdown(int signal){
+	terminate = 1;
+}
+
 int main (int argc, char *const *argv){
 	struct MHD_Daemon *d;
 	pid_t reaper;
@@ -420,6 +464,12 @@ int main (int argc, char *const *argv){
 
 	base = getcwd(base,0);
 
+	struct sigaction sigact;
+	sigact.sa_handler = sig_shutdown;
+	sigemptyset(&sigact.sa_mask);
+	sigact.sa_flags = 0;
+	sigaction(SIGINT, &sigact, (struct sigaction *)NULL);
+
 	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG,
                         atoi (argv[1]), NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
 	if (d == NULL) return 1;
@@ -427,7 +477,21 @@ int main (int argc, char *const *argv){
 	reaper = fork();
 	if (reaper == 0) reap();
 
-	(void) getc (stdin);
+	while (!terminate){
+		printf("lastbark: %lld\n",lastbark);
+		if (ffmpeg != 0 && lastbark < time(NULL) - (3*60)){
+			int status;
+			if (ffmpeg != 0 && waitpid(ffmpeg, &status, WNOHANG) == 0){
+				kill(ffmpeg, SIGTERM);
+				waitpid(ffmpeg, NULL, 0);
+				ffmpeg = 0;
+				remountfs(0);
+			}
+		}
+		sleep (10);
+	}
+
+	printf("Shutting everything down\n");
 
 	// stop everything.
 	kill(ffmpeg, SIGTERM);
