@@ -137,6 +137,7 @@ stop (struct MHD_Connection *connection){
 			snprintf(emsg, sizeof(emsg), "error");
 		else
 			snprintf(emsg, sizeof(emsg), "terminated");
+		ffmpeg = 0;
 	}
 
 	remountfs(0);
@@ -320,7 +321,10 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 // /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -strftime 1 -segment_time 60 -segment_atclocktime 1 -reset_timestamps 1 cam_%Y-%m-%d_%H-%M-%S.mkv
  				if (fsro) remountfs(1);
 				chdir(path); // make sure that this child is actually in the proper path.
-				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video0","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video2","-c:v","copy","-map","0","-map","1","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
+//				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video0","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video2","-c:v","copy","-map","0","-map","1","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
+
+				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video1","-c:v","copy","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
+
 				execv("/home/pi/bin/ffmpeg",argv);
 				remountfs(0);
 				exit(127);
@@ -468,7 +472,8 @@ static void sig_shutdown(int signal){
 
 int main (int argc, char *const *argv){
 	int daemonize = 1;
-	if (argc >= 2) for (int i=1; i<argc; i++) if (strcmp(argv[i],"--nodaemon") == 0) daemonize = 0;
+	int i;
+	if (argc >= 2) for (i=1; i<argc; i++) if (strcmp(argv[i],"--nodaemon") == 0) daemonize = 0;
 	if (daemonize) daemon(0,0);
 
 	struct MHD_Daemon *d;
@@ -477,8 +482,8 @@ int main (int argc, char *const *argv){
 	port = 8888;
 	strcpy(sdev,"/dev/sda3");
 	strcpy(path,"/mnt/data");
-	useWD = 1;
-	hasRTC = 0;
+	useWD = 0;
+	hasRTC = 1;
 	standalone = 0;
 
 	char fsckcmd[1024];
@@ -498,7 +503,7 @@ int main (int argc, char *const *argv){
 	mount(sdev, path, "ext4", MS_MGC_VAL | MS_RDONLY, ""); // mount fs readonly
 	chdir(path); // enter data fs
 
-	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
+	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | 8 /*MHD_USE_INTERNAL_POLLING_THREAD*/ | 1 /*MHD_USE_ERROR_LOG*/, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
 	if (d == NULL) return 1;
 
 	reaper = fork();
