@@ -450,8 +450,7 @@ static void reap(){
 		else {
 			while (n > 0) {
 				n--;
-				//TODO: activate reaper by uncommenting next line:
-				//if (checkfree() < 90) unlink(namelist[n]->d_name);
+				if (checkfree() < 90) unlink(namelist[n]->d_name);
 				free(namelist[n]);
 			}
 			free(namelist);
