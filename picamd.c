@@ -302,7 +302,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	} else if (strcmp(key,"record") == 0){
 		int status;
 		if (ffmpeg == 0 || (ffmpeg > 0 && waitpid(ffmpeg, &status, WNOHANG) != 0)){
-			if (!hasRTC){
+			if (!hasRTC && !standalone){
 				time_t current_time = atoi(data);
 				stime(&current_time); // update the system time with the value from the parameter,
 			}
