@@ -125,18 +125,18 @@ stop (struct MHD_Connection *connection){
 	int ret;
 
 	if (ffmpeg == 0)
-		snprintf(emsg, sizeof(emsg), "not started");
+		snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"not started\" />");
 	else {
 		int status;
 		pid_t pid = waitpid(ffmpeg, &status, WNOHANG);
 		if (pid == 0){
 			kill(ffmpeg, SIGTERM);
 			waitpid(ffmpeg, NULL, 0);
-			snprintf(emsg, sizeof(emsg), "terminated");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" />");
 		} else if (pid < 0)
-			snprintf(emsg, sizeof(emsg), "error");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" />");
 		else
-			snprintf(emsg, sizeof(emsg), "terminated");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" />");
 		ffmpeg = 0;
 	}
 
@@ -146,7 +146,7 @@ stop (struct MHD_Connection *connection){
 	if (response == NULL)
 		return MHD_NO;
 	ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
-	MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/plain");
+	MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/xml");
 	MHD_destroy_response (response);
 	return ret;
 }
@@ -160,22 +160,22 @@ check (struct MHD_Connection *connection){
 	lastbark = time(NULL);
 
 	if (ffmpeg == 0)
-		snprintf(emsg, sizeof(emsg), "not started");
+		snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"not started\" />");
 	else {
 		int status;
 		pid_t pid = waitpid(ffmpeg, &status, WNOHANG);
 		if (pid == 0)
-			snprintf(emsg, sizeof(emsg), "running");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"running\" />");
 		else if (pid < 0)
-			snprintf(emsg, sizeof(emsg), "error");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" />");
 		else
-			snprintf(emsg, sizeof(emsg), "terminated");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" />");
 	}
 
 	response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
 	if (response == NULL) return MHD_NO;
 	ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
-	MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/plain");
+	MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/xml");
 	MHD_destroy_response (response);
 	return ret;
 }
