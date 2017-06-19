@@ -328,8 +328,10 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 			snprintf(response,100,"ffmpeg already running\n");
 	}
     
-	con_info->answerstring = malloc(MAXANSWERSIZE);
-	snprintf(con_info->answerstring, MAXANSWERSIZE, response);
+	if (con_info != NULL){
+		con_info->answerstring = malloc(MAXANSWERSIZE);
+		snprintf(con_info->answerstring, MAXANSWERSIZE, response);
+	}
 
 	return MHD_YES;
 }
@@ -470,13 +472,14 @@ int main (int argc, char *const *argv){
 
 	struct MHD_Daemon *d;
 	pid_t reaper;
+	enum MHD_ValueKind bogus;
 
 	port = 8888;
 	strcpy(sdev,"/dev/mmcblk0p3");
 	strcpy(path,"/mnt/data");
 	useWD = 0;
 	hasRTC = 1;
-	standalone = 0;
+	standalone = 1;
 
 	char fsckcmd[1024];
 
@@ -484,7 +487,7 @@ int main (int argc, char *const *argv){
 	sigact.sa_handler = sig_shutdown;
 	sigemptyset(&sigact.sa_mask);
 	sigact.sa_flags = 0;
-	sigaction(SIGINT, &sigact, (struct sigaction *)NULL);
+	sigaction(SIGTERM, &sigact, (struct sigaction *)NULL);
 
 	strcpy(fsckcmd, "fsck -a ");
 	strcat(fsckcmd, sdev);
@@ -502,6 +505,8 @@ int main (int argc, char *const *argv){
 
 	reaper = fork();
 	if (reaper == 0) reap();
+
+	if (standalone) iterate_post (NULL, bogus, "record", NULL, NULL, NULL, "", 0, 0);
 
 	lastbark = 0;
 	while (!terminate){
