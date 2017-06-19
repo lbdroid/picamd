@@ -15,6 +15,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+// TODO : Implement avahi/zeroconf to make this device discoverable by the client side.
+
 #define ERROR404 "<html><head><title>File not found</title></head><body>File not found</body></html>\n\n"
 #define PAGEOK "<html><head><title>OK</title></head><body>OK</body></html>\n\n"
 
@@ -315,6 +317,13 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				chdir(path); // make sure that this child is actually in the proper path.
 //				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video0","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video2","-c:v","copy","-map","0","-map","1","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
 
+// TODO : If we are --standalone and not --rtc, we need to use a different set of parameters.
+// Specifically, remove "-strftime 1", and "-segment_atclocktime 1". We also need to change the filename to "cam_{prefixnum}_{seqnum}.mkv"
+// We will add a file /mnt/data/PREFIX, in which we will store a number that increments each time ffmpeg is started. {seqnum} can be replaced with "%04d".
+// So cam_{prefixnum}_%04d.mkv
+
+// TODO : We need a better way to store and load the commandline than hardcoding it here.
+
 				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video1","-c:v","copy","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
 
 				execv("/home/pi/bin/ffmpeg",argv);
@@ -445,6 +454,8 @@ static void reap(){
 	struct dirent **namelist;
 	int n;
 	while (1){
+		// TODO: if --standalone and NOT --rtc, we will need to change
+		// the compar function to a reverse alphasort.
 		n = scandir(path, &namelist, *filter, *compar);
 		if (n < 0) perror("scandir");
 		else {
