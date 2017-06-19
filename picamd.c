@@ -503,9 +503,10 @@ int main (int argc, char *const *argv){
 	reaper = fork();
 	if (reaper == 0) reap();
 
+	lastbark = 0;
 	while (!terminate){
-		printf("lastbark: %lld\n",lastbark);
-		if (useWD && ffmpeg != 0 && lastbark < time(NULL) - (3*60)){
+		printf("lastbark: %lld\n",(long long) lastbark);
+		if (useWD && ffmpeg != 0 && ((long long) lastbark) < ((long long) time(NULL)) - (3*60)){
 			int status;
 			if (ffmpeg != 0 && waitpid(ffmpeg, &status, WNOHANG) == 0){
 				kill(ffmpeg, SIGTERM);
