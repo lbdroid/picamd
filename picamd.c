@@ -467,7 +467,26 @@ static void sig_shutdown(int signal){
 int main (int argc, char *const *argv){
 	int daemonize = 1;
 	int i;
-	if (argc >= 2) for (i=1; i<argc; i++) if (strcmp(argv[i],"--nodaemon") == 0) daemonize = 0;
+
+	standalone = 0;
+	hasRTC = 0;
+	useWD = 0;
+
+	printf("Optional Parameters:\n");
+	printf("--------------------\n");
+	printf("    --nodaemon      Do not daemonize.\n");
+	printf("    --standalone    Begin recording automatically.\n");
+	printf("    --rtc           Only use RTC as timesource, do not update from HTTP.\n");
+	printf("    --watchdog      Stop recording automatically if check requests stop.\n");
+	printf("\n");
+	printf("Warning: --standalone and --watchdog are mutually exclusive parameters.\n\n");
+
+	if (argc >= 2) for (i=1; i<argc; i++){
+		if (strcmp(argv[i],"--nodaemon") == 0) daemonize = 0;
+		if (strcmp(argv[i],"--standalone") == 0) standalone = 1;
+		if (strcmp(argv[i],"--rtc") == 0) hasRTC = 1;
+		if (strcmp(argv[i],"--watchdog") == 0) useWD = 1;
+	}
 	if (daemonize) daemon(0,0);
 
 	struct MHD_Daemon *d;
@@ -477,9 +496,6 @@ int main (int argc, char *const *argv){
 	port = 8888;
 	strcpy(sdev,"/dev/mmcblk0p3");
 	strcpy(path,"/mnt/data");
-	useWD = 0;
-	hasRTC = 1;
-	standalone = 1;
 
 	char fsckcmd[1024];
 
