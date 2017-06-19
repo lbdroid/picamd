@@ -100,13 +100,6 @@ isfsro(){
 
 static void
 remountfs (int writable){
-	/* TODO: activate fs remount by uncommenting this function's body...
-	 * NOTE: http://wiki.psuter.ch/doku.php?id=solve_raspbian_sd_card_corruption_issues_with_read-only_mounted_root_partition
-	 * Also... we will shrink the rootfs as much as practical on the rpi, and create an additional data-only partition
-	 * for video files. We can then control the mounting and unmounting of the data partition here.
-	 * Second option; could just mount the data fs with MS_SYNCHRONOUS, then we will only lose a few
-	 * frames at the moment of power loss.
-
 	if (writable && isfsro() && standalone)
 		mount(sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_SYNCHRONOUS, NULL);
 	else if (writable && isfsro())
@@ -115,7 +108,6 @@ remountfs (int writable){
 		sync();
 		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
 	}
-	*/
 }
 
 static int
@@ -480,7 +472,7 @@ int main (int argc, char *const *argv){
 	pid_t reaper;
 
 	port = 8888;
-	strcpy(sdev,"/dev/sda3");
+	strcpy(sdev,"/dev/mmcblk0p3");
 	strcpy(path,"/mnt/data");
 	useWD = 0;
 	hasRTC = 1;
@@ -500,7 +492,9 @@ int main (int argc, char *const *argv){
 	chdir("/"); // change to rootfs
 	umount2(sdev,MNT_FORCE); // unmount existing fs if mounted
 	system(fsckcmd); // check and repair filesystem
-	mount(sdev, path, "ext4", MS_MGC_VAL | MS_RDONLY, ""); // mount fs readonly
+	if (mount(sdev, path, "ext4", MS_MGC_VAL | MS_RDONLY, "") != 0){ // mount fs readonly
+		printf("MOUNT ERROR!!!\n");
+	}
 	chdir(path); // enter data fs
 
 	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | 8 /*MHD_USE_INTERNAL_POLLING_THREAD*/ | 1 /*MHD_USE_ERROR_LOG*/, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
@@ -526,15 +520,19 @@ int main (int argc, char *const *argv){
 	printf("Shutting everything down\n");
 
 	// stop everything.
-	kill(ffmpeg, SIGTERM);
-	waitpid(ffmpeg, NULL, 0);
-	kill(reaper, SIGKILL);
-	waitpid(reaper, NULL, 0);
+	if (ffmpeg != 0){
+		kill(ffmpeg, SIGTERM);
+		waitpid(ffmpeg, NULL, 0);
+	}
+	if (reaper != 0){
+		kill(reaper, SIGKILL);
+		waitpid(reaper, NULL, 0);
+	}
 	MHD_stop_daemon (d);
 	chdir("/");
 	sync();
-	umount2(sdev,MNT_FORCE);
-
+	if (umount2(path,0) != 0) printf("UMOUNT2 ERROR!!! errno: %d\n",errno);
+	else printf("UMOUNT2'ed\n");
 	return 0;
 }
 
