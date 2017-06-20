@@ -102,10 +102,8 @@ isfsro(){
 
 static void
 remountfs (int writable){
-	if (writable && isfsro() && standalone)
+	if (writable && isfsro())
 		mount(sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_SYNCHRONOUS, NULL);
-	else if (writable && isfsro())
-		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT, NULL);
 	else if (!writable && !isfsro()){
 		sync();
 		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
