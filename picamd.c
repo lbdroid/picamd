@@ -198,6 +198,7 @@ int filter(const struct dirent *d){
 	struct dirent a = *d;
 	struct stat ainfo;
 	stat(a.d_name, &ainfo);
+	if(strstr(a.d_name, "CONFIG") == NULL) return 0; // do not list the CONFIG file.
 	if(S_ISREG(ainfo.st_mode)) return 1;
 	return 0;
 }
