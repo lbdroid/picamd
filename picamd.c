@@ -292,14 +292,14 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	if (strcmp(key,"protect") == 0){
 		if (fsro) remountfs(1);
 		if (rename(data, pfilename) == 0)
-			snprintf(response,100,"protected\n");
-		else snprintf(response,100,"protect error\n");
+			snprintf(response,100,"<fileop status=\"success\" />");
+		else snprintf(response,100,"<fileop status=\"error\" />");
 		if (fsro) remountfs(0);
 	} else if (strcmp(key,"unprotect") == 0){
 		if (fsro) remountfs(1);
 		if (rename(pfilename, data) == 0)
-			snprintf(response,100,"unprotected\n");
-		else snprintf(response,100,"unprotect error\n");
+			snprintf(response,100,"<fileop status=\"success\" />");
+		else snprintf(response,100,"<fileop status=\"error\" />");
 		if (fsro) remountfs(0);
 	} else if (strcmp(key,"record") == 0){
 		int status;
@@ -330,11 +330,11 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				remountfs(0);
 				exit(127);
 			} else if (ffmpeg < 0)
-				snprintf(response,100,"fork error\n");
+				snprintf(response,100,"<ffmpeg status=\"error\" />");
 			else
-				snprintf(response,100,"fork success\n");
+				snprintf(response,100,"<ffmpeg status=\"running\" />");
 		} else
-			snprintf(response,100,"ffmpeg already running\n");
+			snprintf(response,100,"<ffmpeg status=\"running\" />");
 	}
     
 	if (con_info != NULL){
@@ -440,31 +440,31 @@ handle_request (void *cls,
 }
 
 int checkfree(){
-	struct statvfs stat;
-	long size, free;
-	float pfree;
-	if (statvfs(path, &stat) != 0) return -1;
-	size = stat.f_bsize * stat.f_blocks;
-	free = stat.f_bsize * stat.f_bfree;
-	pfree = ((float)free / (float)size) * 100.0;
-	return (int)pfree;
+        struct statvfs stat;
+        float pfree;
+        if (statvfs(path, &stat) != 0) return -1;
+        pfree = ((float)stat.f_bfree / (float)stat.f_blocks) * 100.0;
+        printf("Free space: %f\% (float), %d\% (int)\n", pfree, (int)pfree);
+        return (int)pfree;
 }
 
 static void reap(){
 	struct dirent **namelist;
 	int n;
 	while (1){
-		// TODO: if --standalone and NOT --rtc, we will need to change
-		// the compar function to a reverse alphasort.
-		n = scandir(path, &namelist, *filter, *compar);
-		if (n < 0) perror("scandir");
-		else {
-			while (n > 0) {
-				n--;
-				if (checkfree() < 90) unlink(namelist[n]->d_name);
-				free(namelist[n]);
+		if (checkfree() < 90){
+			// TODO: if --standalone and NOT --rtc, we will need to change
+			// the compar function to a reverse alphasort.
+			n = scandir(path, &namelist, *filter, *compar);
+			if (n < 0) perror("scandir");
+			else {
+				while (n > 0) {
+					n--;
+					if (checkfree() < 90) unlink(namelist[n]->d_name);
+					free(namelist[n]);
+				}
+				free(namelist);
 			}
-			free(namelist);
 		}
 		sleep (5*60); // sleep for 5 minutes
 	}
