@@ -15,8 +15,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-// TODO : Implement avahi/zeroconf to make this device discoverable by the client side.
-
 #define ERROR404 "<html><head><title>File not found</title></head><body>File not found</body></html>\n\n"
 #define PAGEOK "<html><head><title>OK</title></head><body>OK</body></html>\n\n"
 
@@ -309,22 +307,78 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 			lastbark = time(NULL);
 			ffmpeg = fork();
 			if (ffmpeg == 0){
-// /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -segment_time 60 -reset_timestamps 1 test%03d.mkv
-// /home/pi/bin/ffmpeg -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video0 -f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video2 -c:v copy -map 0 -map 1 -f segment -strftime 1 -segment_time 60 -segment_atclocktime 1 -reset_timestamps 1 cam_%Y-%m-%d_%H-%M-%S.mkv
  				if (fsro) remountfs(1);
 				chdir(path); // make sure that this child is actually in the proper path.
-//				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video0","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video2","-c:v","copy","-map","0","-map","1","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
 
-// TODO : If we are --standalone and not --rtc, we need to use a different set of parameters.
-// Specifically, remove "-strftime 1", and "-segment_atclocktime 1". We also need to change the filename to "cam_{prefixnum}_{seqnum}.mkv"
-// We will add a file /mnt/data/PREFIX, in which we will store a number that increments each time ffmpeg is started. {seqnum} can be replaced with "%04d".
-// So cam_{prefixnum}_%04d.mkv
+				FILE *fp;
+				char *line = NULL;
+				size_t len = 0;
+				ssize_t read;
 
-// TODO : We need a better way to store and load the commandline than hardcoding it here.
+				int prefix = 0;
+				char params[1024];
+				params[0] = 0;
 
-				static char *argv[]={"ffmpeg","-f","video4linux2","-input_format","h264","-video_size","1280x720","-i","/dev/video1","-c:v","copy","-f","segment","-strftime","1","-segment_time","60","-segment_atclocktime","1","-reset_timestamps","1","cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv",NULL};
+				char paramset[2048];
+				paramset[0]=0;
 
-				execv("/home/pi/bin/ffmpeg",argv);
+				int i;
+				fp = fopen("/mnt/data/CONFIG", "r");
+				if (fp != NULL){
+					while ((read = getline(&line, &len, fp)) != -1){
+						if (read > 0){
+							if (strstr(line, "params=") != NULL){
+								strcpy(params, &line[7]);
+								for (i=0; i<strlen(params); i++) if (params[i] == '\n') params[i] = 0; // remove trailing newline
+							} else if (strstr(line, "prefix=") != NULL){
+								prefix=atoi(&line[7]);
+							}
+						}
+					}
+					fclose(fp);
+				}
+				if (strlen(params) == 0) strcpy(params, "-f video4linux2 -input_format h264 -video_size 640x480 -i /dev/video0 -c:v copy");
+				fp = fopen("/mnt/data/CONFIG", "w+");
+				if (fp != NULL){
+					fprintf(fp, "params=%s\nprefix=%d\n",params,prefix+1);
+					fclose(fp);
+				}
+				if (strlen(params) > 0){
+					if (standalone)
+						sprintf(paramset, "ffmpeg %s -f segment -segment_time 60 -reset_timestamps 1", params, prefix);
+					else
+						sprintf(paramset, "ffmpeg %s -f segment -strftime 1 -segment_time 60 -segment_atclocktime 1 -reset_timestamps 1", params);
+
+					char ** res  = NULL;
+					char *  p    = strtok (paramset, " ");
+					int n_spaces = 0;
+
+					while (p) {
+						res = realloc (res, sizeof (char*) * ++n_spaces);
+						if (res == NULL) break;
+						printf("loop: n_spaces: %d\n",n_spaces);
+						res[n_spaces-1] = p;
+						p = strtok (NULL, " ");
+					}
+					res = realloc (res, sizeof (char*) * (n_spaces+1)); // realloc to 22 pointers.
+					n_spaces++; // increment to 22
+					res[n_spaces-1] = malloc(48); // allocate a new string length 48 at index 21, the 22nd data element
+					res[n_spaces-1][0] = 0;
+					if (standalone){
+						sprintf(res[n_spaces-1], "cam_%06d_", prefix);
+						strcat(res[n_spaces-1], "\%04d.mkv");
+					} else
+						strcpy(res[n_spaces-1], "cam_\%Y-\%m-\%d_\%H-\%M-\%S.mkv");
+
+					res = realloc (res, sizeof (char*) * (n_spaces+1)); // realloc to 23 pointers
+					res[n_spaces] = 0; // set 23rd pointer to NULL.
+
+					for (i = 0; i < (n_spaces+1); ++i)
+						printf ("res[%d] = %s\n", i, res[i]);
+
+					// This (res) is actually a memory leak, but it should clear up when the child exits.
+					if (res != NULL) execv("/home/pi/bin/ffmpeg",res);
+				}
 				remountfs(0);
 				exit(127);
 			} else if (ffmpeg < 0)
@@ -488,6 +542,16 @@ int main (int argc, char *const *argv){
 	printf("    --watchdog      Stop recording automatically if check requests stop.\n");
 	printf("\n");
 	printf("Warning: --standalone and --watchdog are mutually exclusive parameters.\n\n");
+	printf("MANDATORY Configurations:\n");
+	printf("-------------------------\n");
+	printf("	Config file is to be located at /mnt/data/CONFIG\n");
+	printf("	There are to be two lines in it, of which the first (params=) MUST be adjusted\n");
+	printf("	to match YOUR cameras.\n\n");
+	printf("	The params= line is the *device specific part* of the ffmpeg commandline to run\n\n");
+	printf("	Example:\n");
+	printf("	params=-f video4linux2 -input_format h264 -video_size 640x480 -i /dev/video0 -c:v copy\n\n");
+	printf("	Example 2 (two cameras, first h264 at /dev/video1, second mjpeg at /dev/video2:\n");
+	printf("	params=-f video4linux2 -input_format h264 -video_size 1280x720 -i /dev/video1 -c:v copy -f video4linux2 -input_format mjpeg -video_size 1280x720 -i /dev/video3 -c:v copy -map 0 -map 1\n\n");
 
 	if (argc >= 2) for (i=1; i<argc; i++){
 		if (strcmp(argv[i],"--nodaemon") == 0) daemonize = 0;
