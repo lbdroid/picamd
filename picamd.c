@@ -346,7 +346,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				if (strlen(params) == 0) strcpy(params, "-f video4linux2 -input_format h264 -video_size 640x480 -i /dev/video0 -c:v copy");
 				fp = fopen("/mnt/data/CONFIG", "w+");
 				if (fp != NULL){
-					fprintf(fp, "params=%s\nprefix=%d\n",params,prefix+1);
+					fprintf(fp, "params=%s\nprefix=%d\n",params,(standalone && !hasRTC)?prefix+1:prefix);
 					fclose(fp);
 				}
 				if (strlen(params) > 0){
