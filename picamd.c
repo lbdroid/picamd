@@ -351,7 +351,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				}
 				if (strlen(params) > 0){
 					if (standalone && !hasRTC)
-						sprintf(paramset, "ffmpeg %s -f segment -segment_time 60 -reset_timestamps 1", params, prefix);
+						sprintf(paramset, "ffmpeg %s -f segment -segment_time 60 -reset_timestamps 1", params);
 					else
 						sprintf(paramset, "ffmpeg %s -f segment -strftime 1 -segment_time 60 -segment_atclocktime 1 -reset_timestamps 1", params);
 
@@ -510,14 +510,14 @@ static void reap(){
 	struct dirent **namelist;
 	int n;
 	while (1){
-		if (checkfree() < 90){
+		if (checkfree() < (100 - 90)){
 			if (standalone && !hasRTC) n = scandir(path, &namelist, *filter, alphasort);
 			else n = scandir(path, &namelist, *filter, *compar);
 			if (n < 0) perror("scandir");
 			else {
 				while (n > 0) {
 					n--;
-					if (checkfree() < 90) unlink(namelist[n]->d_name);
+					if (checkfree() < (100 - 90)) unlink(namelist[n]->d_name);
 					free(namelist[n]);
 				}
 				free(namelist);
