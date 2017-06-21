@@ -298,6 +298,11 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 			snprintf(response,100,"<fileop status=\"success\" />");
 		else snprintf(response,100,"<fileop status=\"error\" />");
 		if (fsro) remountfs(0);
+	} else if (strcmp(key,"delete") == 0){
+		if (fsro) remountfs(1);
+		if (unlink(data) == 0) snprintf(response,100,"<fileop status=\"success\" />");
+		else snprintf(response,100,"<fileop status=\"error\" />");
+		if (fsro) remountfs(0);
 	} else if (strcmp(key,"record") == 0){
 		int status;
 		if (ffmpeg == 0 || (ffmpeg > 0 && waitpid(ffmpeg, &status, WNOHANG) != 0)){
