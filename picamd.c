@@ -345,7 +345,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 					fclose(fp);
 				}
 				if (strlen(params) > 0){
-					if (standalone)
+					if (standalone && !hasRTC)
 						sprintf(paramset, "ffmpeg %s -f segment -segment_time 60 -reset_timestamps 1", params, prefix);
 					else
 						sprintf(paramset, "ffmpeg %s -f segment -strftime 1 -segment_time 60 -segment_atclocktime 1 -reset_timestamps 1", params);
@@ -365,7 +365,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 					n_spaces++; // increment to 22
 					res[n_spaces-1] = malloc(48); // allocate a new string length 48 at index 21, the 22nd data element
 					res[n_spaces-1][0] = 0;
-					if (standalone){
+					if (standalone && !hasRTC){
 						sprintf(res[n_spaces-1], "cam_%06d_", prefix);
 						strcat(res[n_spaces-1], "\%04d.mkv");
 					} else
@@ -506,9 +506,8 @@ static void reap(){
 	int n;
 	while (1){
 		if (checkfree() < 90){
-			// TODO: if --standalone and NOT --rtc, we will need to change
-			// the compar function to a reverse alphasort.
-			n = scandir(path, &namelist, *filter, *compar);
+			if (standalone && !hasRTC) n = scandir(path, &namelist, *filter, alphasort);
+			else n = scandir(path, &namelist, *filter, *compar);
 			if (n < 0) perror("scandir");
 			else {
 				while (n > 0) {
