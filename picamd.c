@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sqlite3.h>
 
 #define ERROR404 "<html><head><title>File not found</title></head><body>File not found</body></html>\n\n"
 #define PAGEOK "<html><head><title>OK</title></head><body>OK</body></html>\n\n"
@@ -34,6 +35,10 @@ char sdev[1024];
 int useWD;
 int hasRTC;
 int standalone;
+
+sqlite3 *db = NULL;
+char *zErrMsg = 0;
+int rc;
 
 struct connection_info_struct {
 	int connectiontype;
@@ -132,6 +137,10 @@ stop (struct MHD_Connection *connection){
 		ffmpeg = 0;
 	}
 
+	if (db != NULL){
+		sqlite3_close(db);
+		db = NULL;
+	}
 	remountfs(0);
 
 	response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
@@ -201,6 +210,7 @@ int filter(const struct dirent *d){
 	struct stat ainfo;
 	stat(a.d_name, &ainfo);
 	if(strstr(a.d_name, "CONFIG") != NULL) return 0; // do not list the CONFIG file.
+	if(strstr(a.d_name, "gps.db") != NULL) return 0; // do not list the GPS log file.
 	if(S_ISREG(ainfo.st_mode)) return 1;
 	return 0;
 }
@@ -288,6 +298,8 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	char response[100];
 	int fsro = isfsro();
 
+	char gpslog[1024];
+
 	if (strcmp(key,"protect") == 0){
 		if (fsro) remountfs(1);
 		if (rename(data, pfilename) == 0)
@@ -305,6 +317,23 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 		if (unlink(data) == 0) snprintf(response,100,"<fileop status=\"success\" />");
 		else snprintf(response,100,"<fileop status=\"error\" />");
 		if (fsro) remountfs(0);
+	} else if (strcmp(key,"gpslog") == 0){
+		if (!fsro && ffmpeg > 0){
+			if (db == NULL){
+				if (sqlite3_open("gps.db", &db)) db = NULL;
+				else (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), value TEXT)", NULL, 0, &zErrMsg));
+				if (zErrMsg != NULL) sqlite3_free(zErrMsg);
+			}
+			if (db != NULL){
+				snprintf(response, 1023, "INSERT INTO gps (value) VALUES (\"%s\")", data);
+				rc = sqlite3_exec(db, response, NULL, 0, &zErrMsg);
+				if( rc!=SQLITE_OK ){
+					snprintf(response,100,"<gpslog status=\"error\" value=\"%s\" />", zErrMsg);
+					sqlite3_free(zErrMsg);
+				} else
+					snprintf(response,100,"<gpslog status=\"stored\" />");
+			} else snprintf(response,100,"<gpslog status=\"error\" value=\"Cannot open database\" />");
+		} else snprintf(response,100,"<gpslog status=\"not recording\" />");
 	} else if (strcmp(key,"record") == 0){
 		int status;
 		if (ffmpeg == 0 || (ffmpeg > 0 && waitpid(ffmpeg, &status, WNOHANG) != 0)){
@@ -385,7 +414,11 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 						printf ("res[%d] = %s\n", i, res[i]);
 
 					// This (res) is actually a memory leak, but it should clear up when the child exits.
-					if (res != NULL) execv("/home/pi/bin/ffmpeg",res);
+					if (res != NULL) execv("/bin/ffmpeg",res);
+				}
+				if (db != NULL){
+					sqlite3_close(db);
+					db = NULL;
 				}
 				remountfs(0);
 				exit(127);
@@ -512,7 +545,7 @@ static void reap(){
 	struct dirent **namelist;
 	int n;
 	while (1){
-		if (checkfree() < (100 - 90)){
+		if (!isfsro() && checkfree() < (100 - 90)){
 			if (standalone && !hasRTC) n = scandir(path, &namelist, *filter, alphasort);
 			else n = scandir(path, &namelist, *filter, *compar);
 			if (n < 0) perror("scandir");
@@ -523,6 +556,11 @@ static void reap(){
 					free(namelist[n]);
 				}
 				free(namelist);
+			}
+			if (db == NULL && sqlite3_open("gps.db", &db)) db = NULL;
+			if (db != NULL){
+				rc = sqlite3_exec(db, "DELETE FROM gps WHERE time < (SELECT time FROM gps ORDER BY time DESC LIMIT 1 OFFSET 1000000)", NULL, 0, &zErrMsg);
+				if (zErrMsg != NULL) sqlite3_free(zErrMsg);
 			}
 		}
 		sleep (5*60); // sleep for 5 minutes

@@ -1,5 +1,5 @@
 CC = gcc
-LIBS = -lmicrohttpd
+LIBS = -lmicrohttpd -lsqlite3
 
 all: picamd
 
