@@ -321,7 +321,10 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 		if (!fsro && ffmpeg > 0){
 			if (db == NULL){
 				if (sqlite3_open("gps.db", &db)) db = NULL;
-				else (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), value TEXT)", NULL, 0, &zErrMsg));
+				else {
+					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), value TEXT)", NULL, 0, &zErrMsg);
+					sqlite3_exec(db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+				}
 				if (zErrMsg != NULL) sqlite3_free(zErrMsg);
 			}
 			if (db != NULL){
