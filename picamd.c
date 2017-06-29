@@ -115,6 +115,51 @@ remountfs (int writable){
 	}
 }
 
+int compar(const struct dirent **pa, const struct dirent **pb){
+        struct dirent a, b;
+        a = **pa; b = **pb;
+        struct stat ainfo, binfo;
+        stat(a.d_name, &ainfo);
+        stat(b.d_name, &binfo);
+        if (ainfo.st_mtime == binfo.st_mtime) return 0;
+        else if (ainfo.st_mtime < binfo.st_mtime) return 1;
+        return -1;
+}
+
+int filter(const struct dirent *d){
+        struct dirent a = *d;
+        struct stat ainfo;
+        stat(a.d_name, &ainfo);
+        if(strstr(a.d_name, "gps.db") != NULL) return 0; // do not list the GPS log file.
+        if(S_ISREG(ainfo.st_mode)) return 1;
+        return 0;
+}
+
+int audiofilter(const struct dirent *d){
+        struct dirent a = *d;
+        struct stat ainfo;
+        stat(a.d_name, &ainfo);
+        if(strstr(a.d_name, "dsp") != NULL) return 1;
+        return 0;
+}
+
+int videofilter(const struct dirent *d){
+        struct dirent a = *d;
+        struct stat ainfo;
+        stat(a.d_name, &ainfo);
+        if(strstr(a.d_name, "video") != NULL) return 1;
+        return 0;
+}
+
+struct file_data {
+        struct dirent **protected;
+        int p;
+        int rp;
+        struct dirent **unprotected;
+        int np;
+        int rnp;
+};
+
 static int
 stop (struct MHD_Connection *connection){
 	char emsg[1024];
@@ -181,6 +226,102 @@ check (struct MHD_Connection *connection){
 	return ret;
 }
 
+static int
+getcams (struct MHD_Connection *connection){
+	struct MHD_Response *response;
+	int ret = MHD_NO;
+	FILE *fp;
+	char data[1024];
+	char cmd[1024];
+	char *xml, *p, *e, *c;
+	xml = malloc(10240*sizeof(char));
+
+	strcpy(xml, "<hardware>\n");
+	struct dirent **namelist;
+	int n = scandir("/dev/", &namelist, *audiofilter, alphasort);
+	int i;
+	for (i = 0; i < n; i++){
+		strcat(xml, "<audiodev name=\"");
+		strcat(xml, namelist[i]->d_name);
+		strcat(xml, "\" />\n");
+		free(namelist[i]);
+	}
+	free(namelist);
+
+	n = scandir("/dev/", &namelist, *videofilter, alphasort);
+	for (i = 0; i < n; i++){
+		strcat(xml, "<videodev name=\"");
+		strcat(xml, namelist[i]->d_name);
+		strcat(xml, "\">");
+
+		snprintf(cmd, 1023, "ffmpeg -hide_banner -f v4l2 -list_formats all -i /dev/%s 2>&1", namelist[i]->d_name);
+		fp = popen(cmd, "r");
+		if (fp != NULL){
+			while (fgets(data, sizeof(path)-1, fp) != NULL){
+				if ((p=strstr(data, "Raw")) != NULL || (p=strstr(data, "Compressed")) != NULL){
+					strcat(xml, "<format type=\"");
+					c = strchr(p, ':');
+					e = strchr(p, ' ');
+					if (e > c) e = c;
+					strncpy(xml+strlen(xml), p, e-p);
+					strcat(xml, "\" name=\"");
+					p = c + 1;
+					while(p[0]==' ')p++;
+					c = strchr(p, ':');
+					e = strchr(p, ' ');
+					if (e > c) e = c;
+					strncpy(xml+strlen(xml), p, e-p);
+					strcat(xml, "\">");
+					c++;
+					c = strstr(c, " : ");
+					p = c+3;
+					e = strchr(p, '\n'); 
+					if (strchr(p, '{') != NULL){
+						// This is a RANGE, like "{32-2592, 2}x{32-1944, 2}"
+						// dump in the range as a single resolution, handle it on other end.
+						strcat(xml, "<resolution value=\"");
+						strncpy(xml+strlen(xml), p, e-p);
+						strcat(xml, "\" />");
+					} else {
+						// This is a set of distinct resolutions. Add each individually.
+						e = strchr(p, ' ');
+						while (e != NULL){
+							strcat(xml, "<resolution value=\"");
+							strncpy(xml+strlen(xml), p, e-p);
+							strcat(xml, "\" />");
+
+							p = e+1;
+							e = strchr(p, ' ');
+							if (e == NULL) e = strchr(p, '\n');
+						}
+
+					}
+					strcat(xml, "</format>");
+				}
+
+			}
+		}
+		pclose(fp);
+
+		// run ffmpeg as ffmpeg -hide_banner -f v4l2 -list_formats all -i $CAM
+		// foreach output;
+		    //append <format type="[raw|compressed]" name="whatever">
+		    //foreach resolution append <resolution value="whateverXwhatever" />
+		    //append </format>
+		strcat(xml, "</videodev>\n");
+	}
+	strcat(xml, "</hardware>\n");
+
+	response = MHD_create_response_from_buffer (strlen (xml), xml, MHD_RESPMEM_MUST_COPY);
+        if (response == NULL) return MHD_NO;
+        ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
+        MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/xml");
+        MHD_destroy_response (response);
+
+	free(xml);
+	return ret;
+}
+
 static ssize_t
 file_reader (void *cls, uint64_t pos, char *buf, size_t max){
 	FILE *file = cls;
@@ -193,35 +334,6 @@ file_free_callback (void *cls){
 	FILE *file = cls;
 	fclose (file);
 }
-
-int compar(const struct dirent **pa, const struct dirent **pb){
-        struct dirent a, b;
-        a = **pa; b = **pb;
-	struct stat ainfo, binfo;
-	stat(a.d_name, &ainfo);
-	stat(b.d_name, &binfo);
-	if (ainfo.st_mtime == binfo.st_mtime) return 0;
-	else if (ainfo.st_mtime < binfo.st_mtime) return 1;
-	return -1;
-}
-
-int filter(const struct dirent *d){
-	struct dirent a = *d;
-	struct stat ainfo;
-	stat(a.d_name, &ainfo);
-	if(strstr(a.d_name, "gps.db") != NULL) return 0; // do not list the GPS log file.
-	if(S_ISREG(ainfo.st_mode)) return 1;
-	return 0;
-}
-
-struct file_data {
-	struct dirent **protected;
-	int p;
-	int rp;
-	struct dirent **unprotected;
-	int np;
-	int rnp;
-};
 
 static void
 file_data_free_callback (void *cls){
@@ -507,6 +619,8 @@ handle_request (void *cls,
 		return list(connection);
 	else if (strcmp(url, "/check") == 0)
 		return check(connection);
+	else if (strcmp(url, "/getcams") == 0)
+		return getcams(connection);
 
 	file = fopen (&url[1], "rb"); // strip the first character "/" from the url, and open that.
 	if (file != NULL){
