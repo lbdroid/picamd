@@ -303,11 +303,6 @@ getcams (struct MHD_Connection *connection){
 		}
 		pclose(fp);
 
-		// run ffmpeg as ffmpeg -hide_banner -f v4l2 -list_formats all -i $CAM
-		// foreach output;
-		    //append <format type="[raw|compressed]" name="whatever">
-		    //foreach resolution append <resolution value="whateverXwhatever" />
-		    //append </format>
 		strcat(xml, "</videodev>\n");
 	}
 	strcat(xml, "</hardware>\n");
@@ -319,6 +314,29 @@ getcams (struct MHD_Connection *connection){
         MHD_destroy_response (response);
 
 	free(xml);
+	return ret;
+}
+
+static int
+reboot (struct MHD_Connection *connection){
+	struct MHD_Response *response;
+	char xml[1024];
+	int ret = MHD_NO;
+	pid_t rbtpid = fork();
+
+	if (fork() == 0){
+		sleep(3);
+		system("/sbin/reboot");
+		exit(127);		
+	}
+
+	strcpy(xml, "<rebooting />");
+	response = MHD_create_response_from_buffer (strlen (xml), xml, MHD_RESPMEM_MUST_COPY);
+        if (response == NULL) return MHD_NO;
+        ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
+        MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/xml");
+        MHD_destroy_response (response);
+
 	return ret;
 }
 
@@ -621,6 +639,8 @@ handle_request (void *cls,
 		return check(connection);
 	else if (strcmp(url, "/getcams") == 0)
 		return getcams(connection);
+	else if (strcmp(url, "/reboot") == 0)
+		return reboot(connection);
 
 	file = fopen (&url[1], "rb"); // strip the first character "/" from the url, and open that.
 	if (file != NULL){
