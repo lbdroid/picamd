@@ -582,6 +582,29 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 			snprintf(response,100,"<settings status=\"success\" />");
 		} else snprintf(response,100,"<settings status=\"failure\" />");
 		if (fsro) remountfs(0);
+	} else if (strcmp(key,"setwifi") == 0){
+		char ssid[128], psk[128], keymgmt[128];
+		char *p, *e, *mdata;
+		FILE *fp;
+                mount ("/dev/mmcblk0p2", "/ro", "ext4", MS_MGC_VAL | MS_REMOUNT, NULL);
+		fp = fopen("/ro/etc/wpa_supplicant/wpa_supplicant.conf", "w+");
+		if (fp != NULL){
+			mdata = malloc(strlen(data));
+			strcpy(mdata, data);
+			p = mdata;
+			e = strchr(p, ':');
+			strncpy(ssid, p, e-p);
+			p = e+1;
+			e = strchr(p, ':');
+			strncpy(psk, p, e-p);
+			p = e+1;
+			strncpy(keymgmt, p, strlen(p));
+			free(mdata);
+			fprintf(fp, "country=GB\nctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\nupdate_config=1\nnetwork={\n  ssid=\"%s\"\n  psk=\"%s\"\n  key_mgmt=%s\n}\n", ssid, psk, keymgmt);
+		}
+                sync();
+                mount ("/dev/mmcblk0p2", "/ro", "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
+		snprintf(response,100,"<settings status=\"success\" note=\"Recommend rebooting now...\" />");
 	} else if (strcmp(key, "delete") == 0){
 		char path[1024];
 		if (fsro) remountfs(1);
