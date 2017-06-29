@@ -492,7 +492,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				paramset[0]=0;
 
 				int i;
-				fp = fopen("/boot/PICAMCONFIG", "r");
+				fp = fopen("/mnt/data/CONFIG", "r");
 				if (fp != NULL){
 					while ((read = getline(&line, &len, fp)) != -1){
 						if (read > 0){
@@ -507,7 +507,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 					fclose(fp);
 				}
 				if (strlen(params) == 0) strcpy(params, "-f video4linux2 -input_format h264 -video_size 640x480 -i /dev/video0 -c:v copy");
-				fp = fopen("/boot/PICAMCONFIG", "w+");
+				fp = fopen("/mnt/data/CONFIG", "w+");
 				if (fp != NULL){
 					fprintf(fp, "params=%s\nprefix=%d\n",params,(standalone && !hasRTC)?prefix+1:prefix);
 					fclose(fp);
@@ -725,7 +725,7 @@ int main (int argc, char *const *argv){
 	printf("Warning: --standalone and --watchdog are mutually exclusive parameters.\n\n");
 	printf("MANDATORY Configurations:\n");
 	printf("-------------------------\n");
-	printf("	Config file is to be located at /boot/PICAMCONFIG\n");
+	printf("	Config file is to be located at /mnt/data/CONFIG\n");
 	printf("	There are to be two lines in it, of which the first (params=) MUST be adjusted\n");
 	printf("	to match YOUR cameras.\n\n");
 	printf("	The params= line is the *device specific part* of the ffmpeg commandline to run\n\n");
