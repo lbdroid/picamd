@@ -560,6 +560,36 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				snprintf(response,100,"<ffmpeg status=\"running\" />");
 		} else
 			snprintf(response,100,"<ffmpeg status=\"running\" />");
+	} else if (strcmp(key,"setcams") == 0){
+		int prefix = 0;
+		int i;
+		FILE *fp;
+		char *line = NULL;
+		size_t len = 0;
+		ssize_t read;
+
+		fp = fopen("/mnt/data/CONFIG", "r");
+		if (fp != NULL){
+			while ((read = getline(&line, &len, fp)) != -1)
+				if (read > 0 && strstr(line, "prefix=") != NULL) prefix=atoi(&line[7]);
+			fclose(fp);
+		}
+		if (fsro) remountfs(1);
+		fp = fopen("/mnt/data/CONFIG", "w+");
+		if (fp != NULL){
+			fprintf(fp, "params=%s\nprefix=%d\n",data,prefix);
+			fclose(fp);
+			snprintf(response,100,"<settings status=\"success\" />");
+		} else snprintf(response,100,"<settings status=\"failure\" />");
+		if (fsro) remountfs(0);
+	} else if (strcmp(key, "delete") == 0){
+		char path[1024];
+		if (fsro) remountfs(1);
+		snprintf(path, 1023, "/mnt/data/%s", data);
+		unlink(path);
+		snprintf(path, 1023, "/mnt/data/protected/%s", data);
+		unlink(path);
+		if (fsro) remountfs(0);
 	}
     
 	if (con_info != NULL){
