@@ -423,24 +423,33 @@ list (struct MHD_Connection *connection){
 void *gpslog_fn(void *run){
 	int ret;
 	stoplogging = 0;
+	char sqldata[1024];
 	struct gps_data_t gps_dat;
 	ret = gps_open("localhost", "2947", &gps_dat);
 	(void) gps_stream(&gps_dat, WATCH_ENABLE | WATCH_NMEA, NULL);
 
-	while (stoplogging == 0){
+	if (db == NULL){
+		if (sqlite3_open("/mnt/data/gps.db", &db)) db = NULL;
+		else {
+			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), value TEXT)", NULL, NULL, NULL);
+			sqlite3_exec(db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+		}
+	}
 
-		if (gps_waiting (&gps_dat, 500)) {
+	while (db != NULL && stoplogging == 0){
+
+		if (gps_waiting (&gps_dat, 2000000)) { // wait up to 2 seconds (2 million us) for data to appear
 			errno = 0;
-			if (gps_read (&gps_dat) == -1) {
-				// read FAILURE
-			} else {
+			if (gps_read (&gps_dat) != -1) {
 				/* Display data from the GPS receiver. */
-				//if (gps_data.set & ...
-				printf("%s\n", gps_data(&gps_dat));
+//				printf("%s\n", gps_data(&gps_dat));
+				snprintf(sqldata, 1023, "INSERT INTO gps (value) VALUES (\"%s\")", gps_data(&gps_dat));
+				rc = sqlite3_exec(db, sqldata, NULL, NULL, NULL);
 			}
 		}
-		usleep(100);
 	}
+
+	sqlite3_close(db);
 
 	(void) gps_stream(&gps_dat, WATCH_DISABLE, NULL);
 	(void) gps_close (&gps_dat);
@@ -500,6 +509,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	} else if (strcmp(key,"record") == 0){
 		int status;
 		if (ffmpeg == 0 || (ffmpeg > 0 && waitpid(ffmpeg, &status, WNOHANG) != 0)){
+			if (fsro) remountfs(1);
 			if (!hasRTC && !standalone){
 				time_t current_time = atoi(data);
 				stime(&current_time); // update the system time with the value from the parameter,
@@ -509,7 +519,6 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 			lastbark = time(NULL);
 			ffmpeg = fork();
 			if (ffmpeg == 0){
- 				if (fsro) remountfs(1);
 				chdir(path); // make sure that this child is actually in the proper path.
 
 				FILE *fp;
@@ -585,11 +594,13 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 					sqlite3_close(db);
 					db = NULL;
 				}
+				stoplogging = 1;
 				remountfs(0);
 				exit(127);
-			} else if (ffmpeg < 0)
+			} else if (ffmpeg < 0){
+				remountfs(0);
 				snprintf(response,100,"<ffmpeg status=\"error\" />");
-			else
+			} else
 				snprintf(response,100,"<ffmpeg status=\"running\" />");
 		} else
 			snprintf(response,100,"<ffmpeg status=\"running\" />");
