@@ -15,6 +15,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sqlite3.h>
+#include <gps.h>
+#include <pthread.h>
 
 #define ERROR404 "<html><head><title>File not found</title></head><body>File not found</body></html>\n\n"
 #define PAGEOK "<html><head><title>OK</title></head><body>OK</body></html>\n\n"
@@ -28,6 +30,8 @@
 pid_t ffmpeg = 0;
 time_t lastbark;
 int terminate = 0;
+static int stoplogging = 0;
+pthread_t gps_thread;
 
 int port;
 char path[1024];
@@ -180,6 +184,7 @@ stop (struct MHD_Connection *connection){
 		else
 			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" />");
 		ffmpeg = 0;
+		stoplogging = 1;
 	}
 
 	if (db != NULL){
@@ -415,6 +420,32 @@ list (struct MHD_Connection *connection){
 	return ret;
 }
 
+void *gpslog_fn(void *run){
+	int ret;
+	stoplogging = 0;
+	struct gps_data_t gps_dat;
+	ret = gps_open("localhost", "2947", &gps_dat);
+	(void) gps_stream(&gps_dat, WATCH_ENABLE | WATCH_NMEA, NULL);
+
+	while (stoplogging == 0){
+
+		if (gps_waiting (&gps_dat, 500)) {
+			errno = 0;
+			if (gps_read (&gps_dat) == -1) {
+				// read FAILURE
+			} else {
+				/* Display data from the GPS receiver. */
+				//if (gps_data.set & ...
+				printf("%s\n", gps_data(&gps_dat));
+			}
+		}
+		usleep(100);
+	}
+
+	(void) gps_stream(&gps_dat, WATCH_DISABLE, NULL);
+	(void) gps_close (&gps_dat);
+}
+
 static int
 iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
               const char *filename, const char *content_type,
@@ -473,6 +504,8 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				time_t current_time = atoi(data);
 				stime(&current_time); // update the system time with the value from the parameter,
 			}
+			int blob;
+			if (strcmp(data, "gps") == 0) pthread_create(&gps_thread, NULL, gpslog_fn, (void* )blob);
 			lastbark = time(NULL);
 			ffmpeg = fork();
 			if (ffmpeg == 0){
