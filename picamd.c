@@ -432,6 +432,7 @@ void *gpslog_fn(void *run){
 		if (sqlite3_open("/mnt/data/gps.db", &db)) db = NULL;
 		else {
 			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), value TEXT)", NULL, NULL, NULL);
+			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, value TEXT)", NULL, NULL, NULL);
 			sqlite3_exec(db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
 		}
 	}
@@ -466,6 +467,11 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	snprintf(pfilename, 1023, "protected/%s", data);
 	char response[100];
 	int fsro = isfsro();
+	int dbnull = (db == NULL);
+	char sqldata[1024];
+	sqldata[0]=0;
+	char date[32];
+	date[0]=0;
 
 	char gpslog[1024];
 
@@ -474,11 +480,45 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 		if (rename(data, pfilename) == 0)
 			snprintf(response,100,"<fileop status=\"success\" />");
 		else snprintf(response,100,"<fileop status=\"error\" />");
+
+		if (dbnull && sqlite3_open("gps.db", &db)){
+			db = NULL;
+			if (fsro) remountfs(0);
+			return MHD_YES;
+		}
+
+		strncpy(date, data+4, 19);
+		date[10]=' ';
+		date[13]=':';
+		date[16]=':';
+
+		snprintf(sqldata, 1023, "INSERT INTO prot (SELECT \"%s\", time, value FROM gps WHERE time >= \"%s\" AND time < DATETIME(\"%s\", \"+5 seconds\")", data, date, date);
+		sqlite3_exec(db, sqldata, NULL, NULL, NULL);
+
+		if (dbnull){
+			sqlite3_close(db);
+			db = NULL;
+		}
 		if (fsro) remountfs(0);
 	} else if (strcmp(key,"unprotect") == 0){
 		if (fsro) remountfs(1);
 		if (rename(pfilename, data) == 0)
 			snprintf(response,100,"<fileop status=\"success\" />");
+
+		if (dbnull && sqlite3_open("gps.db", &db)){
+			db = NULL;
+			if (fsro) remountfs(0);
+			return MHD_YES;
+		}
+
+		snprintf(sqldata, 1023, "DELETE FROM prot WHERE filename = \"%s\"", data);
+		sqlite3_exec(db, sqldata, NULL, NULL, NULL);
+
+		if (dbnull){
+			sqlite3_close(db);
+			db = NULL;
+		}
+
 		else snprintf(response,100,"<fileop status=\"error\" />");
 		if (fsro) remountfs(0);
 	} else if (strcmp(key,"delete") == 0){
@@ -492,6 +532,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				if (sqlite3_open("gps.db", &db)) db = NULL;
 				else {
 					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), value TEXT)", NULL, 0, &zErrMsg);
+					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, value TEXT)", NULL, NULL, NULL);
 					sqlite3_exec(db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
 				}
 				if (zErrMsg != NULL) sqlite3_free(zErrMsg);
@@ -739,6 +780,12 @@ handle_request (void *cls,
 	else if (strcmp(url, "/reboot") == 0)
 		return reboot(connection);
 
+	// TODO THIS is the part that serves an actual file from the filesystem....
+	// What we need to do is check if "?gpslog" is tacked onto the end of the
+	// URL. If it is, then we need to generate a subtitles file for the file
+	// being requested, and mux them together and into a fifo, and serve
+	// the result. If not, then do exactly as below.
+
 	file = fopen (&url[1], "rb"); // strip the first character "/" from the url, and open that.
 	if (file != NULL){
 		fd = fileno (file);
@@ -777,6 +824,8 @@ int checkfree(){
 static void reap(){
 	struct dirent **namelist;
 	int n;
+	char oldest[32];
+	char sql[1024];
 	while (1){
 		if (!isfsro() && checkfree() < (100 - 90)){
 			if (standalone && !hasRTC) n = scandir(path, &namelist, *filter, alphasort);
@@ -785,15 +834,21 @@ static void reap(){
 			else {
 				while (n > 0) {
 					n--;
-					if (checkfree() < (100 - 90)) unlink(namelist[n]->d_name);
+					if (checkfree() < (100 - 90)){
+						unlink(namelist[n]->d_name);
+						strncpy(oldest, namelist[n-1]->d_name+4, 19);
+					}
 					free(namelist[n]);
 				}
 				free(namelist);
 			}
 			if (db == NULL && sqlite3_open("gps.db", &db)) db = NULL;
 			if (db != NULL){
-				rc = sqlite3_exec(db, "DELETE FROM gps WHERE time < (SELECT time FROM gps ORDER BY time DESC LIMIT 1 OFFSET 1000000)", NULL, 0, &zErrMsg);
-				if (zErrMsg != NULL) sqlite3_free(zErrMsg);
+				oldest[10]=' ';
+				oldest[13]=':';
+				oldest[16]=':';
+				snprintf(sql, 1023, "DELETE FROM gps WHERE time < DATETIME(\"%s\", \"-10 seconds\")", oldest);
+				rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
 			}
 		}
 		sleep (5*60); // sleep for 5 minutes
