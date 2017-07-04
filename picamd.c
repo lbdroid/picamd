@@ -426,11 +426,13 @@ void *gpslog_fn(void *run){
 	char sqldata[1024];
 	char nmea[1024];
 	timestamp_t gpstime;
+	int dbnull;
 	struct gps_data_t gps_dat;
 	ret = gps_open("localhost", "2947", &gps_dat);
 	(void) gps_stream(&gps_dat, WATCH_ENABLE | WATCH_JSON | WATCH_NMEA, NULL);
 
-	if (db == NULL){
+	dbnull = (db == NULL);
+	if (dbnull){
 		if (sqlite3_open("/mnt/data/gps.db", &db)) db = NULL;
 		else {
 			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), gpstime INT, value TEXT)", NULL, NULL, NULL);
@@ -456,7 +458,7 @@ void *gpslog_fn(void *run){
 		}
 	}
 
-	sqlite3_close(db);
+	if (dbnull) sqlite3_close(db);
 
 	(void) gps_stream(&gps_dat, WATCH_DISABLE, NULL);
 	(void) gps_close (&gps_dat);
@@ -700,12 +702,12 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
                 mount ("/dev/mmcblk0p2", "/ro", "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
 		snprintf(response,100,"<settings status=\"success\" note=\"Recommend rebooting now...\" />");
 	} else if (strcmp(key, "delete") == 0){
-		char path[1024];
+		char dpath[1024];
 		if (fsro) remountfs(1);
-		snprintf(path, 1023, "/mnt/data/%s", data);
-		unlink(path);
-		snprintf(path, 1023, "/mnt/data/protected/%s", data);
-		unlink(path);
+		snprintf(dpath, 1023, "/mnt/data/%s", data);
+		unlink(dpath);
+		snprintf(dpath, 1023, "/mnt/data/protected/%s", data);
+		unlink(dpath);
 		if (fsro) remountfs(0);
 	}
     
@@ -837,17 +839,16 @@ handle_request (void *cls,
 
 	char *sql;
 	char *start;
-	char path[128];
+	char dpath[128];
 	char srtpath[64];
 	char fndate[64];
 	int isprot = 0;
 	int dbnull = (db == NULL);
 
 	if (getgpslog){
-		//path = malloc(strlen(url));
-		strcpy(path, url);
-		start = strrchr(path, '/')+1;
-		if (start-path > 1) isprot = 1;
+		strcpy(dpath, url);
+		start = strrchr(dpath, '/')+1;
+		if (start-dpath > 1) isprot = 1;
 		if (dbnull && sqlite3_open("gps.db", &db)){
 			db = NULL;
 			return MHD_NO;
@@ -873,9 +874,10 @@ handle_request (void *cls,
 		FILE *srt = fopen(srtpath, "w+");
 		sqlite3_exec(db, sql, gpslog_cb, (void *)srt, NULL);
 		fclose(srt);
+		if (dbnull) sqlite3_close(db);
 
 		char cmd[512];
-		snprintf(cmd, 511, "/bin/ffmpeg -i %s -f srt -i %s -c copy -map 0 -map 1:s %s", path+1, srtpath, tmppath);
+		snprintf(cmd, 511, "/bin/ffmpeg -i %s -f srt -i %s -c copy -map 0 -map 1:s %s", dpath+1, srtpath, tmppath);
 		system(cmd);
 
 		file = fopen(tmppath, "rb");
@@ -1054,6 +1056,7 @@ int main (int argc, char *const *argv){
 	}
 	MHD_stop_daemon (d);
 	chdir("/");
+	if (db != NULL) sqlite3_close(db);
 	sync();
 	if (umount2(path,0) != 0) printf("UMOUNT2 ERROR!!! errno: %d\n",errno);
 	else printf("UMOUNT2'ed\n");
