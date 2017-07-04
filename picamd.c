@@ -424,9 +424,11 @@ void *gpslog_fn(void *run){
 	int ret;
 	stoplogging = 0;
 	char sqldata[1024];
+	char nmea[1024];
+	timestamp_t gpstime;
 	struct gps_data_t gps_dat;
 	ret = gps_open("localhost", "2947", &gps_dat);
-	(void) gps_stream(&gps_dat, WATCH_ENABLE | WATCH_NMEA, NULL);
+	(void) gps_stream(&gps_dat, WATCH_ENABLE | WATCH_JSON | WATCH_NMEA, NULL);
 
 	if (db == NULL){
 		if (sqlite3_open("/mnt/data/gps.db", &db)) db = NULL;
@@ -443,9 +445,13 @@ void *gpslog_fn(void *run){
 			errno = 0;
 			if (gps_read (&gps_dat) != -1) {
 				/* Display data from the GPS receiver. */
-//				printf("%s\n", gps_data(&gps_dat));
-				snprintf(sqldata, 1023, "INSERT INTO gps (gpstime, value) VALUES (%ld, \"%s\")", gps_dat.fix.time, gps_data(&gps_dat));
-				rc = sqlite3_exec(db, sqldata, NULL, NULL, NULL);
+				strcpy(nmea, gps_data(&gps_dat));
+				strchr(nmea, '\r')[0] = 0;
+				if (nmea[0] == '$' && ((long)gps_dat.fix.time) != 0){
+					snprintf(sqldata, 1023, "INSERT INTO gps (gpstime, value) VALUES (%ld, \"%s\")", (long)gps_dat.fix.time, nmea);
+//					printf("SQL: %s\n",sqldata);
+					sqlite3_exec(db, sqldata, NULL, NULL, NULL);
+				}
 			}
 		}
 	}
@@ -718,6 +724,7 @@ static int gpslog_cb(void *data, int argc, char **argv, char **colName){
 
 	long gpstime;
 	char nmea[1024];
+	char outline[1024];
 
 	int i;
 	int dt, ss, ms, hs, se, me, he;
@@ -733,23 +740,27 @@ static int gpslog_cb(void *data, int argc, char **argv, char **colName){
 
 		dt = gpstime-startgpstime;
 		ss = dt%60;
-		dt = dt-ss;
+		dt = (dt-ss)/60;
 		ms = dt%60;
-		hs = dt-ms;
+		hs = (dt-ms)/60;
 		dt = gpstime-startgpstime+1;
 		se = dt%60;
-		dt = dt-se;
+		dt = (dt-se)/60;
 		me = dt%60;
-		he = dt-me;
+		he = (dt-me)/60;
 
 		fprintf(file, "%d\n%02ld:%02ld:%02ld,000 --> %02ld:%02ld:%02ld,000\n", gpstime-startgpstime+1, hs, ms, ss, he, me, se);
 		seq++;
 		lastgpstime = gpstime;
 	}
-
 	fprintf(file, "%s\n", nmea);
 
 	return 0;
+}
+
+static int
+get_gps_cb (void *cls, enum MHD_ValueKind kind, const char *key , const char* value){
+	if (strstr(key, "gpslog") != NULL) *(int *) cls = 1;
 }
 
 static int
@@ -768,7 +779,10 @@ handle_request (void *cls,
 	int fd;
 
 	struct stat buf;
-  
+	int getgpslog = 0;
+	MHD_get_connection_values(connection, MHD_GET_ARGUMENT_KIND, get_gps_cb, &getgpslog);
+	//printf("getgpslog: %d\n", getgpslog);
+
 	if (*con_cls == NULL){
 		struct connection_info_struct *con_info;
 
@@ -795,8 +809,6 @@ handle_request (void *cls,
 
 	if (!(strcmp(method, MHD_HTTP_METHOD_GET) == 0 || strcmp(method, MHD_HTTP_METHOD_POST) == 0))
 		return MHD_NO;              /* unexpected method */
-
-	printf("URL: %s\nMethod: %s\nVersion: %s\n\n",url,method,version);
 
 	if (strstr(url, "favicon") != NULL) return not_found_page(connection); // tell anything asking for favicon to drop dead.
 
@@ -825,16 +837,16 @@ handle_request (void *cls,
 
 	char *sql;
 	char *start;
-	char *path;
-	char srtpath[32];
-	char fndate[32];
+	char path[128];
+	char srtpath[64];
+	char fndate[64];
 	int isprot = 0;
 	int dbnull = (db == NULL);
-	if (strstr(url, "?gpslog") != NULL){
-		path = malloc(strlen(url));
+
+	if (getgpslog){
+		//path = malloc(strlen(url));
 		strcpy(path, url);
-		path[strlen(path)-7]=0;
-		start = strrchr(url, '/')+1;
+		start = strrchr(path, '/')+1;
 		if (start-path > 1) isprot = 1;
 		if (dbnull && sqlite3_open("gps.db", &db)){
 			db = NULL;
@@ -851,24 +863,24 @@ handle_request (void *cls,
 		fndate[13]=':';
 		fndate[16]=':';
 
-		char tmppath[32];
+		char tmppath[64];
 		strcpy(tmppath,"/tmp/");
 		strcat(tmppath,start);
 
 		sql = malloc(1024);
 		if (isprot) snprintf(sql, 1023, "SELECT time, value FROM prot WHERE filename=\"%s\" ORDER BY time ASC", start);
-		else snprintf(sql, 1023, "SELECT time, value FROM gps WHERE time >= \"%s\" AND time < DATETIME(\"%s\", \"+10 seconds\") ORDER BY time ASC", fndate, fndate);
-
+		else snprintf(sql, 1023, "SELECT gpstime, value FROM gps WHERE DATETIME(time, 'localtime') >= \"%s\" AND DATETIME(time, 'localtime') < DATETIME(\"%s\", \"+62 seconds\") ORDER BY time ASC", fndate, fndate);
 		FILE *srt = fopen(srtpath, "w+");
 		sqlite3_exec(db, sql, gpslog_cb, (void *)srt, NULL);
 		fclose(srt);
 
 		char cmd[512];
-		snprintf(cmd, 511, "/bin/ffmpeg -i %s -f srt -i %s -c:s copy /tmp/%s", path, srtpath, start);
+		snprintf(cmd, 511, "/bin/ffmpeg -i %s -f srt -i %s -c copy -map 0 -map 1:s %s", path+1, srtpath, tmppath);
 		system(cmd);
 
 		file = fopen(tmppath, "rb");
-		free(path);
+		unlink(srtpath);
+		unlink(tmppath);
 	} else
 		file = fopen (&url[1], "rb"); // strip the first character "/" from the url, and open that.
 
@@ -1016,7 +1028,7 @@ int main (int argc, char *const *argv){
 
 	lastbark = 0;
 	while (!terminate){
-		printf("lastbark: %lld\n",(long long) lastbark);
+		//printf("lastbark: %lld\n",(long long) lastbark);
 		if (useWD && ffmpeg != 0 && ((long long) lastbark) < ((long long) time(NULL)) - (3*60)){
 			int status;
 			if (ffmpeg != 0 && waitpid(ffmpeg, &status, WNOHANG) == 0){
