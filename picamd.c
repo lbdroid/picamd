@@ -498,7 +498,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 		date[13]=':';
 		date[16]=':';
 
-		snprintf(sqldata, 1023, "INSERT INTO prot (SELECT \"%s\", time, value FROM gps WHERE time >= \"%s\" AND time < DATETIME(\"%s\", \"+5 seconds\")", data, date, date);
+		snprintf(sqldata, 1023, "INSERT INTO prot SELECT \"%s\" AS filename, time, gpstime, value FROM gps WHERE DATETIME(time, 'localtime') >= \"%s\" AND DATETIME(time, 'localtime') < DATETIME(\"%s\", \"+62 seconds\")", data, date, date);
 		sqlite3_exec(db, sqldata, NULL, NULL, NULL);
 
 		if (dbnull){
@@ -868,7 +868,7 @@ handle_request (void *cls,
 		strcat(tmppath,start);
 
 		sql = malloc(1024);
-		if (isprot) snprintf(sql, 1023, "SELECT time, value FROM prot WHERE filename=\"%s\" ORDER BY time ASC", start);
+		if (isprot) snprintf(sql, 1023, "SELECT gpstime, value FROM prot WHERE filename=\"%s\" ORDER BY time ASC", start);
 		else snprintf(sql, 1023, "SELECT gpstime, value FROM gps WHERE DATETIME(time, 'localtime') >= \"%s\" AND DATETIME(time, 'localtime') < DATETIME(\"%s\", \"+62 seconds\") ORDER BY time ASC", fndate, fndate);
 		FILE *srt = fopen(srtpath, "w+");
 		sqlite3_exec(db, sql, gpslog_cb, (void *)srt, NULL);
