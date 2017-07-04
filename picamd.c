@@ -431,8 +431,8 @@ void *gpslog_fn(void *run){
 	if (db == NULL){
 		if (sqlite3_open("/mnt/data/gps.db", &db)) db = NULL;
 		else {
-			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), value TEXT)", NULL, NULL, NULL);
-			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, value TEXT)", NULL, NULL, NULL);
+			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), gpstime INT, value TEXT)", NULL, NULL, NULL);
+			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, gpstime INT, value TEXT)", NULL, NULL, NULL);
 			sqlite3_exec(db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
 		}
 	}
@@ -444,7 +444,7 @@ void *gpslog_fn(void *run){
 			if (gps_read (&gps_dat) != -1) {
 				/* Display data from the GPS receiver. */
 //				printf("%s\n", gps_data(&gps_dat));
-				snprintf(sqldata, 1023, "INSERT INTO gps (value) VALUES (\"%s\")", gps_data(&gps_dat));
+				snprintf(sqldata, 1023, "INSERT INTO gps (gpstime, value) VALUES (%ld, \"%s\")", gps_dat.fix.time, gps_data(&gps_dat));
 				rc = sqlite3_exec(db, sqldata, NULL, NULL, NULL);
 			}
 		}
@@ -531,14 +531,17 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 			if (db == NULL){
 				if (sqlite3_open("gps.db", &db)) db = NULL;
 				else {
-					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), value TEXT)", NULL, 0, &zErrMsg);
-					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, value TEXT)", NULL, NULL, NULL);
+					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), gpstime INT, value TEXT)", NULL, 0, &zErrMsg);
+					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, gpstime INT, value TEXT)", NULL, NULL, NULL);
 					sqlite3_exec(db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
 				}
 				if (zErrMsg != NULL) sqlite3_free(zErrMsg);
 			}
 			if (db != NULL){
-				snprintf(response, 1023, "INSERT INTO gps (value) VALUES (\"%s\")", data);
+				char nmea[1024];
+				char *c = strchr(data,':');
+				if (c != NULL) strncpy(nmea, data, c - data);
+				snprintf(response, 1023, "INSERT INTO gps (gpstime, value) VALUES (%s, \"%s\")", c+1, data);
 				rc = sqlite3_exec(db, response, NULL, 0, &zErrMsg);
 				if( rc!=SQLITE_OK ){
 					snprintf(response,100,"<gpslog status=\"error\" value=\"%s\" />", zErrMsg);
@@ -708,6 +711,46 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	return MHD_YES;
 }
 
+long startgpstime=0, lastgpstime=0;
+int seq = 0;
+static int gpslog_cb(void *data, int argc, char **argv, char **colName){
+	FILE *file = (FILE *)data;
+
+	long gpstime;
+	char nmea[1024];
+
+	int i;
+	int dt, ss, ms, hs, se, me, he;
+	for (i=0; i<argc; i++){
+		if (strstr(colName[i],"gpstime") != NULL) gpstime = atol(argv[i]);
+		if (strstr(colName[i],"value") != NULL) strcpy(nmea, argv[i]);
+	}
+
+	if (seq == 0) startgpstime = gpstime;
+
+	if (gpstime > lastgpstime){
+		if (seq > 0) fprintf(file, "\n");
+
+		dt = gpstime-startgpstime;
+		ss = dt%60;
+		dt = dt-ss;
+		ms = dt%60;
+		hs = dt-ms;
+		dt = gpstime-startgpstime+1;
+		se = dt%60;
+		dt = dt-se;
+		me = dt%60;
+		he = dt-me;
+
+		fprintf(file, "%d\n%02ld:%02ld:%02ld,000 --> %02ld:%02ld:%02ld,000\n", gpstime-startgpstime+1, hs, ms, ss, he, me, se);
+		seq++;
+		lastgpstime = gpstime;
+	}
+
+	fprintf(file, "%s\n", nmea);
+
+	return 0;
+}
 
 static int
 handle_request (void *cls,
@@ -780,13 +823,55 @@ handle_request (void *cls,
 	else if (strcmp(url, "/reboot") == 0)
 		return reboot(connection);
 
-	// TODO THIS is the part that serves an actual file from the filesystem....
-	// What we need to do is check if "?gpslog" is tacked onto the end of the
-	// URL. If it is, then we need to generate a subtitles file for the file
-	// being requested, and mux them together and into a fifo, and serve
-	// the result. If not, then do exactly as below.
+	char *sql;
+	char *start;
+	char *path;
+	char srtpath[32];
+	char fndate[32];
+	int isprot = 0;
+	int dbnull = (db == NULL);
+	if (strstr(url, "?gpslog") != NULL){
+		path = malloc(strlen(url));
+		strcpy(path, url);
+		path[strlen(path)-7]=0;
+		start = strrchr(url, '/')+1;
+		if (start-path > 1) isprot = 1;
+		if (dbnull && sqlite3_open("gps.db", &db)){
+			db = NULL;
+			return MHD_NO;
+		}
+		strcpy(srtpath,"/tmp/");
+		strcat(srtpath,start);
+		srtpath[strlen(srtpath)-3]='s';
+		srtpath[strlen(srtpath)-2]='r';
+		srtpath[strlen(srtpath)-1]='t';
 
-	file = fopen (&url[1], "rb"); // strip the first character "/" from the url, and open that.
+		strncpy(fndate, start+4, 19);
+		fndate[10]=' ';
+		fndate[13]=':';
+		fndate[16]=':';
+
+		char tmppath[32];
+		strcpy(tmppath,"/tmp/");
+		strcat(tmppath,start);
+
+		sql = malloc(1024);
+		if (isprot) snprintf(sql, 1023, "SELECT time, value FROM prot WHERE filename=\"%s\" ORDER BY time ASC", start);
+		else snprintf(sql, 1023, "SELECT time, value FROM gps WHERE time >= \"%s\" AND time < DATETIME(\"%s\", \"+10 seconds\") ORDER BY time ASC", fndate, fndate);
+
+		FILE *srt = fopen(srtpath, "w+");
+		sqlite3_exec(db, sql, gpslog_cb, (void *)srt, NULL);
+		fclose(srt);
+
+		char cmd[512];
+		snprintf(cmd, 511, "/bin/ffmpeg -i %s -f srt -i %s -c:s copy /tmp/%s", path, srtpath, start);
+		system(cmd);
+
+		file = fopen(tmppath, "rb");
+		free(path);
+	} else
+		file = fopen (&url[1], "rb"); // strip the first character "/" from the url, and open that.
+
 	if (file != NULL){
 		fd = fileno (file);
 		if (-1 == fd){
