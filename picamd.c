@@ -1017,7 +1017,7 @@ int main (int argc, char *const *argv){
 	umount2(sdev,MNT_FORCE); // unmount existing fs if mounted
 	if (access(sdev, F_OK) != -1){
 		system(fsckcmd); // check and repair filesystem
-	else {
+	} else {
 		exit(1); //ABORT, storage path does not exist
 	}
 	if (mount(sdev, path, "ext4", MS_MGC_VAL | MS_RDONLY, "") != 0){ // mount fs readonly
