@@ -641,6 +641,7 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 						printf ("res[%d] = %s\n", i, res[i]);
 
 					// This (res) is actually a memory leak, but it should clear up when the child exits.
+					nice(-20);
 					if (res != NULL) execv("/bin/ffmpeg",res);
 				}
 				if (db != NULL){
