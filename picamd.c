@@ -671,6 +671,12 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 		size_t len = 0;
 		ssize_t read;
 
+		char params[1024];
+		char *extra;
+		char *extradata;
+		extradata = malloc(strlen(data)+1);
+		strcpy(extradata, data);
+
 		fp = fopen("/mnt/data/CONFIG", "r");
 		if (fp != NULL){
 			while ((read = getline(&line, &len, fp)) != -1)
@@ -680,10 +686,17 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 		if (fsro) remountfs(1);
 		fp = fopen("/mnt/data/CONFIG", "w+");
 		if (fp != NULL){
-			fprintf(fp, "params=%s\nprefix=%d\n",data,prefix);
+			strncpy(params, extradata, (char*)strchrnul(extradata, ':') - extradata);
+			fprintf(fp, "params=%s\nprefix=%d\n",params,prefix);
+			extra=extradata;
+			while((extra=(char*)strchrnul(extra, ':')+1) < extradata+strlen(extradata)){
+				strncpy(params, extra, (char*)strchrnul(extra, ':')-extra);
+				fprintf(fp, "extra=%s\n", params);
+			}
 			fclose(fp);
 			snprintf(response,100,"<settings status=\"success\" />");
 		} else snprintf(response,100,"<settings status=\"failure\" />");
+		free(extradata);
 		if (fsro) remountfs(0);
 	} else if (strcmp(key,"setwifi") == 0){
 		char ssid[128], psk[128], keymgmt[128];
