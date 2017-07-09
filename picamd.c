@@ -585,6 +585,10 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				char extracmd[1024];
 				extracmd[0] = 0;
 
+				char *allextras;
+				allextras = malloc(10240);
+				allextras[0] = 0;
+
 				char paramset[2048];
 				paramset[0]=0;
 
@@ -601,16 +605,25 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 							} else if (strstr(line, "extra=") != NULL){
 								strcpy(extracmd, &line[6]);
 								system(extracmd);
+								strcat(allextras, "extra=");
+								strcat(allextras, extracmd);
+								strcat(allextras, "\n");
 							}
 						}
 					}
 					fclose(fp);
 				}
-				if (strlen(params) == 0) strcpy(params, "-f video4linux2 -input_format h264 -video_size 640x480 -i /dev/video0 -c:v copy");
-				fp = fopen("/mnt/data/CONFIG", "w+");
-				if (fp != NULL){
-					fprintf(fp, "params=%s\nprefix=%d\n",params,(standalone && !hasRTC)?prefix+1:prefix);
-					fclose(fp);
+				i == 0;
+				if (strlen(params) == 0){
+					strcpy(params, "-f video4linux2 -input_format h264 -video_size 640x480 -i /dev/video0 -c:v copy");
+					i = 1;
+				}
+				if (i || (standalone && !hasRTC)){
+					fp = fopen("/mnt/data/CONFIG", "w+");
+					if (fp != NULL){
+						fprintf(fp, "params=%s\nprefix=%d\n%s",params,(standalone && !hasRTC)?prefix+1:prefix,allextras);
+						fclose(fp);
+					}
 				}
 				if (strlen(params) > 0){
 					if (standalone && !hasRTC)
