@@ -582,6 +582,8 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				int prefix = 0;
 				char params[1024];
 				params[0] = 0;
+				char extracmd[1024];
+				extracmd[0] = 0;
 
 				char paramset[2048];
 				paramset[0]=0;
@@ -596,6 +598,9 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 								for (i=0; i<strlen(params); i++) if (params[i] == '\n') params[i] = 0; // remove trailing newline
 							} else if (strstr(line, "prefix=") != NULL){
 								prefix=atoi(&line[7]);
+							} else if (strstr(line, "extra=") != NULL){
+								strcpy(extracmd, &line[6]);
+								system(extracmd);
 							}
 						}
 					}
