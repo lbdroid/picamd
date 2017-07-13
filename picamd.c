@@ -120,14 +120,13 @@ remountfs (int writable){
 }
 
 int compar(const struct dirent **pa, const struct dirent **pb){
-        struct dirent a, b;
-        a = **pa; b = **pb;
-        struct stat ainfo, binfo;
-        stat(a.d_name, &ainfo);
-        stat(b.d_name, &binfo);
-        if (ainfo.st_mtime == binfo.st_mtime) return 0;
-        else if (ainfo.st_mtime < binfo.st_mtime) return 1;
-        return -1;
+	const char *a = (*pa)->d_name;
+	const char *b = (*pb)->d_name;
+	struct stat ainfo, binfo;
+	if (stat(a, &ainfo) != 0 || stat(b, &binfo) != 0) return 0;
+	if (ainfo.st_mtime == binfo.st_mtime) return 0;
+	else if (ainfo.st_mtime < binfo.st_mtime) return 1;
+	return -1;
 }
 
 int filter(const struct dirent *d){
