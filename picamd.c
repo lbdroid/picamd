@@ -31,7 +31,7 @@ pid_t ffmpeg = 0;
 time_t lastbark;
 int terminate = 0;
 static int stoplogging = 0;
-pthread_t gps_thread;
+pthread_t gps_thread, reaper_thread;
 
 int port;
 char path[1024];
@@ -962,12 +962,12 @@ int checkfree(){
         return (int)pfree;
 }
 
-static void reap(){
+void *reap(void *run){
 	struct dirent **namelist;
 	int n;
 	char oldest[32];
 	char sql[1024];
-	while (1){
+	while (!terminate){
 		if (ffmpeg > 0 && checkfree() < (100 - 90) && getGPSDB()){
 			if (standalone && !hasRTC) n = scandir(path, &namelist, *filter, alphasort);
 			else n = scandir(path, &namelist, *filter, *compar);
@@ -1034,7 +1034,6 @@ int main (int argc, char *const *argv){
 	if (daemonize) daemon(0,0);
 
 	struct MHD_Daemon *d;
-	pid_t reaper;
 	enum MHD_ValueKind bogus;
 
 	port = 8888;
@@ -1067,8 +1066,7 @@ int main (int argc, char *const *argv){
 	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | 8 /*MHD_USE_INTERNAL_POLLING_THREAD*/ | 1 /*MHD_USE_ERROR_LOG*/, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
 	if (d == NULL) return 1;
 
-	reaper = fork();
-	if (reaper == 0) reap();
+	pthread_create(&reaper_thread, NULL, reap, NULL);
 
 	if (standalone) iterate_post (NULL, bogus, "record", NULL, NULL, NULL, "", 0, 0);
 
@@ -1093,10 +1091,6 @@ int main (int argc, char *const *argv){
 	if (ffmpeg != 0){
 		kill(ffmpeg, SIGTERM);
 		waitpid(ffmpeg, NULL, 0);
-	}
-	if (reaper != 0){
-		kill(reaper, SIGKILL);
-		waitpid(reaper, NULL, 0);
 	}
 	MHD_stop_daemon (d);
 	chdir("/");
