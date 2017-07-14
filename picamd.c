@@ -44,6 +44,11 @@ sqlite3 *db = NULL;
 char *zErrMsg = 0;
 int rc;
 
+static pthread_mutex_t fs_mutex;
+static int fs_users = 0;
+static pthread_mutex_t db_mutex;
+static int db_users = 0;
+
 struct connection_info_struct {
 	int connectiontype;
 	char *answerstring;
@@ -100,7 +105,7 @@ send_page (struct MHD_Connection *connection, const char *page){
 }
 
 static int
-isfsro(){
+isFilesystemRO(){
 	struct statvfs stat;
 	if (statvfs(path, &stat) != 0) return -1;
 	if (stat.f_flag & ST_RDONLY) return 1;
@@ -108,16 +113,67 @@ isfsro(){
 }
 
 static void
-remountfs (int writable){
-	if (writable && isfsro() && standalone)
+remountFS (int writable){
+	if (writable && standalone)
 		mount(sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_SYNCHRONOUS, NULL);
-	else if (writable && isfsro())
+	else if (writable)
 		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT, NULL);
-	else if (!writable && !isfsro()){
+	else if (!writable){
 		sync();
 		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
 	}
 }
+
+int getWritableFS(){
+	int ret = 0;
+	pthread_mutex_lock(&fs_mutex);
+	if (isFilesystemRO()) remountFS(1);
+	if (!isFilesystemRO()){
+		fs_users++;
+		ret=1;
+	}
+	pthread_mutex_unlock(&fs_mutex);
+	return ret;
+}
+
+void releaseWritableFS(){
+	pthread_mutex_lock(&fs_mutex);
+	fs_users--;
+	if (fs_users < 0) fs_users = 0;
+	if (fs_users == 0 && !isFilesystemRO()) remountFS(0);
+	pthread_mutex_unlock(&fs_mutex);
+}
+
+int getGPSDB(){
+	int ret = 0;
+	pthread_mutex_lock(&db_mutex);
+	db_users++;
+	if (db == NULL && getWritableFS()){
+		if (sqlite3_open("/mnt/data/gps.db", &db)) db = NULL;
+		else {
+			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), gpstime INT, value TEXT)", NULL, NULL, NULL);
+			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, gpstime INT, value TEXT)", NULL, NULL, NULL);
+			sqlite3_exec(db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+			ret = 1;
+		}
+	} else if (db != NULL && getWritableFS()) ret = 1;
+	if (ret == 0) db_users--;
+	pthread_mutex_unlock(&db_mutex);
+	return ret;
+}
+
+int releaseGPSDB(){
+	pthread_mutex_lock(&db_mutex);
+	db_users--;
+	if (db_users < 0) db_users = 0;
+	if (db_users == 0 && db != NULL){
+		sqlite3_close(db);
+		db = NULL;
+	}
+	releaseWritableFS();
+	pthread_mutex_unlock(&db_mutex);
+}
+
 
 int compar(const struct dirent **pa, const struct dirent **pb){
 	const char *a = (*pa)->d_name;
@@ -178,6 +234,7 @@ stop (struct MHD_Connection *connection){
 		if (pid == 0){
 			kill(ffmpeg, SIGTERM);
 			waitpid(ffmpeg, NULL, 0);
+			releaseWritableFS();
 			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" />");
 		} else if (pid < 0)
 			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" />");
@@ -186,12 +243,6 @@ stop (struct MHD_Connection *connection){
 		ffmpeg = 0;
 		stoplogging = 1;
 	}
-
-	if (db != NULL){
-		sqlite3_close(db);
-		db = NULL;
-	}
-	remountfs(0);
 
 	response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
 	if (response == NULL)
@@ -426,39 +477,27 @@ void *gpslog_fn(void *run){
 	char sqldata[1024];
 	char nmea[1024];
 	timestamp_t gpstime;
-	int dbnull;
 	struct gps_data_t gps_dat;
 	ret = gps_open("localhost", "2947", &gps_dat);
 	(void) gps_stream(&gps_dat, WATCH_ENABLE | WATCH_JSON | WATCH_NMEA, NULL);
 
-	dbnull = (db == NULL);
-	if (dbnull){
-		if (sqlite3_open("/mnt/data/gps.db", &db)) db = NULL;
-		else {
-			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), gpstime INT, value TEXT)", NULL, NULL, NULL);
-			sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, gpstime INT, value TEXT)", NULL, NULL, NULL);
-			sqlite3_exec(db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-		}
-	}
-
-	while (db != NULL && stoplogging == 0){
-
-		if (gps_waiting (&gps_dat, 2000000)) { // wait up to 2 seconds (2 million us) for data to appear
-			errno = 0;
-			if (gps_read (&gps_dat) != -1) {
-				/* Display data from the GPS receiver. */
-				strcpy(nmea, gps_data(&gps_dat));
-				strchr(nmea, '\r')[0] = 0;
-				if (nmea[0] == '$' && ((long)gps_dat.fix.time) != 0){
-					snprintf(sqldata, 1023, "INSERT INTO gps (gpstime, value) VALUES (%ld, \"%s\")", (long)gps_dat.fix.time, nmea);
-//					printf("SQL: %s\n",sqldata);
-					sqlite3_exec(db, sqldata, NULL, NULL, NULL);
+	if (getGPSDB()){
+		while (db != NULL && stoplogging == 0){
+			if (gps_waiting (&gps_dat, 2000000)) { // wait up to 2 seconds (2 million us) for data to appear
+				errno = 0;
+				if (gps_read (&gps_dat) != -1) {
+					/* Display data from the GPS receiver. */
+					strcpy(nmea, gps_data(&gps_dat));
+					strchr(nmea, '\r')[0] = 0;
+					if (nmea[0] == '$' && ((long)gps_dat.fix.time) != 0){
+						snprintf(sqldata, 1023, "INSERT INTO gps (gpstime, value) VALUES (%ld, \"%s\")", (long)gps_dat.fix.time, nmea);
+						sqlite3_exec(db, sqldata, NULL, NULL, NULL);
+					}
 				}
 			}
 		}
+		releaseGPSDB();
 	}
-
-	if (dbnull) sqlite3_close(db);
 
 	(void) gps_stream(&gps_dat, WATCH_DISABLE, NULL);
 	(void) gps_close (&gps_dat);
@@ -474,8 +513,6 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	char pfilename[1024];
 	snprintf(pfilename, 1023, "protected/%s", data);
 	char response[100];
-	int fsro = isfsro();
-	int dbnull = (db == NULL);
 	char sqldata[1024];
 	sqldata[0]=0;
 	char date[32];
@@ -484,16 +521,10 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	char gpslog[1024];
 
 	if (strcmp(key,"protect") == 0){
-		if (fsro) remountfs(1);
+		if (!getGPSDB()) return MHD_YES;
 		if (rename(data, pfilename) == 0)
 			snprintf(response,100,"<fileop status=\"success\" />");
 		else snprintf(response,100,"<fileop status=\"error\" />");
-
-		if (dbnull && sqlite3_open("gps.db", &db)){
-			db = NULL;
-			if (fsro) remountfs(0);
-			return MHD_YES;
-		}
 
 		strncpy(date, data+4, 19);
 		date[10]=' ';
@@ -502,50 +533,24 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 
 		snprintf(sqldata, 1023, "INSERT INTO prot SELECT \"%s\" AS filename, time, gpstime, value FROM gps WHERE DATETIME(time, 'localtime') >= \"%s\" AND DATETIME(time, 'localtime') < DATETIME(\"%s\", \"+62 seconds\")", data, date, date);
 		sqlite3_exec(db, sqldata, NULL, NULL, NULL);
-
-		if (dbnull){
-			sqlite3_close(db);
-			db = NULL;
-		}
-		if (fsro) remountfs(0);
+		releaseGPSDB();
 	} else if (strcmp(key,"unprotect") == 0){
-		if (fsro) remountfs(1);
-		if (rename(pfilename, data) == 0)
+		if (!getGPSDB()) return MHD_YES;
+		if (rename(pfilename, data) == 0){
 			snprintf(response,100,"<fileop status=\"success\" />");
-
-		if (dbnull && sqlite3_open("gps.db", &db)){
-			db = NULL;
-			if (fsro) remountfs(0);
-			return MHD_YES;
-		}
-
-		snprintf(sqldata, 1023, "DELETE FROM prot WHERE filename = \"%s\"", data);
-		sqlite3_exec(db, sqldata, NULL, NULL, NULL);
-
-		if (dbnull){
-			sqlite3_close(db);
-			db = NULL;
-		}
-
-		else snprintf(response,100,"<fileop status=\"error\" />");
-		if (fsro) remountfs(0);
+			snprintf(sqldata, 1023, "DELETE FROM prot WHERE filename = \"%s\"", data);
+			sqlite3_exec(db, sqldata, NULL, NULL, NULL);
+		} else snprintf(response,100,"<fileop status=\"error\" />");
+		releaseGPSDB();
 	} else if (strcmp(key,"delete") == 0){
-		if (fsro) remountfs(1);
-		if (unlink(data) == 0) snprintf(response,100,"<fileop status=\"success\" />");
-		else snprintf(response,100,"<fileop status=\"error\" />");
-		if (fsro) remountfs(0);
+		if (getWritableFS()){
+			if (unlink(data) == 0) snprintf(response,100,"<fileop status=\"success\" />");
+			else snprintf(response,100,"<fileop status=\"error\" />");
+			releaseWritableFS();
+		} else snprintf(response,100,"<fileop status=\"error\" />");
 	} else if (strcmp(key,"gpslog") == 0){
-		if (!fsro && ffmpeg > 0){
-			if (db == NULL){
-				if (sqlite3_open("gps.db", &db)) db = NULL;
-				else {
-					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS gps (time TEXT PRIMARY KEY DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')), gpstime INT, value TEXT)", NULL, 0, &zErrMsg);
-					sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS prot (filename TEXT, time TEXT, gpstime INT, value TEXT)", NULL, NULL, NULL);
-					sqlite3_exec(db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-				}
-				if (zErrMsg != NULL) sqlite3_free(zErrMsg);
-			}
-			if (db != NULL){
+		if (ffmpeg > 0){
+			if (getGPSDB()){
 				char nmea[1024];
 				char *c = strchr(data,':');
 				if (c != NULL) strncpy(nmea, data, c - data);
@@ -556,21 +561,24 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 					sqlite3_free(zErrMsg);
 				} else
 					snprintf(response,100,"<gpslog status=\"stored\" />");
+				releaseGPSDB();
 			} else snprintf(response,100,"<gpslog status=\"error\" value=\"Cannot open database\" />");
 		} else snprintf(response,100,"<gpslog status=\"not recording\" />");
 	} else if (strcmp(key,"record") == 0){
 		int status;
 		if (ffmpeg == 0 || (ffmpeg > 0 && waitpid(ffmpeg, &status, WNOHANG) != 0)){
-			if (fsro) remountfs(1);
 			if (!hasRTC && !standalone){
 				time_t current_time = atoi(data);
 				stime(&current_time); // update the system time with the value from the parameter,
 			}
 			int blob;
-			if (strcmp(data, "gps") == 0) pthread_create(&gps_thread, NULL, gpslog_fn, (void* )blob);
-			lastbark = time(NULL);
-			ffmpeg = fork();
-			if (ffmpeg == 0){
+			if (getWritableFS()){
+				if (strcmp(data, "gps") == 0)
+					pthread_create(&gps_thread, NULL, gpslog_fn, (void* )blob);
+				lastbark = time(NULL);
+				ffmpeg = fork();
+			} else ffmpeg = -1;
+			if (ffmpeg == 0){ // CHILD PROCESS
 				chdir(path); // make sure that this child is actually in the proper path.
 
 				FILE *fp;
@@ -661,17 +669,14 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 					nice(-20);
 					if (res != NULL) execv("/bin/ffmpeg",res);
 				}
-				if (db != NULL){
-					sqlite3_close(db);
-					db = NULL;
-				}
+				// Below 3 lines will only run if the exec fails.
 				stoplogging = 1;
-				remountfs(0);
+				releaseWritableFS();
 				exit(127);
-			} else if (ffmpeg < 0){
-				remountfs(0);
+			} else if (ffmpeg < 0){ // PROCESS FORKING ERROR
+				releaseWritableFS();
 				snprintf(response,100,"<ffmpeg status=\"error\" />");
-			} else
+			} else // PARENT PROCESS
 				snprintf(response,100,"<ffmpeg status=\"running\" />");
 		} else
 			snprintf(response,100,"<ffmpeg status=\"running\" />");
@@ -695,21 +700,23 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				if (read > 0 && strstr(line, "prefix=") != NULL) prefix=atoi(&line[7]);
 			fclose(fp);
 		}
-		if (fsro) remountfs(1);
-		fp = fopen("/mnt/data/CONFIG", "w+");
-		if (fp != NULL){
-			strncpy(params, extradata, (char*)strchrnul(extradata, ':') - extradata);
-			fprintf(fp, "params=%s\nprefix=%d\n",params,prefix);
-			extra=extradata;
-			while((extra=(char*)strchrnul(extra, ':')+1) < extradata+strlen(extradata)){
-				strncpy(params, extra, (char*)strchrnul(extra, ':')-extra);
-				fprintf(fp, "extra=%s\n", params);
-			}
-			fclose(fp);
-			snprintf(response,100,"<settings status=\"success\" />");
-		} else snprintf(response,100,"<settings status=\"failure\" />");
+
+		if (getWritableFS()){
+			fp = fopen("/mnt/data/CONFIG", "w+");
+			if (fp != NULL){
+				strncpy(params, extradata, (char*)strchrnul(extradata, ':') - extradata);
+				fprintf(fp, "params=%s\nprefix=%d\n",params,prefix);
+				extra=extradata;
+				while((extra=(char*)strchrnul(extra, ':')+1) < extradata+strlen(extradata)){
+					strncpy(params, extra, (char*)strchrnul(extra, ':')-extra);
+					fprintf(fp, "extra=%s\n", params);
+				}
+				fclose(fp);
+				snprintf(response,100,"<settings status=\"success\" />");
+			} else snprintf(response,100,"<settings status=\"failure\" />");
+			releaseWritableFS();
+		}
 		free(extradata);
-		if (fsro) remountfs(0);
 	} else if (strcmp(key,"setwifi") == 0){
 		char ssid[128], psk[128], keymgmt[128];
 		char *p, *e, *mdata;
@@ -735,12 +742,13 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 		snprintf(response,100,"<settings status=\"success\" note=\"Recommend rebooting now...\" />");
 	} else if (strcmp(key, "delete") == 0){
 		char dpath[1024];
-		if (fsro) remountfs(1);
-		snprintf(dpath, 1023, "/mnt/data/%s", data);
-		unlink(dpath);
-		snprintf(dpath, 1023, "/mnt/data/protected/%s", data);
-		unlink(dpath);
-		if (fsro) remountfs(0);
+		if (getWritableFS()){
+			snprintf(dpath, 1023, "/mnt/data/%s", data);
+			unlink(dpath);
+			snprintf(dpath, 1023, "/mnt/data/protected/%s", data);
+			unlink(dpath);
+			releaseWritableFS();
+		}
 	}
     
 	if (con_info != NULL){
@@ -876,16 +884,13 @@ handle_request (void *cls,
 	char srtpath[64];
 	char fndate[64];
 	int isprot = 0;
-	int dbnull = (db == NULL);
 
 	if (getgpslog){
 		strcpy(dpath, url);
 		start = strrchr(dpath, '/')+1;
 		if (start-dpath > 1) isprot = 1;
-		if (dbnull && sqlite3_open("gps.db", &db)){
-			db = NULL;
-			return MHD_NO;
-		}
+		if (!getGPSDB()) return MHD_NO;
+
 		strcpy(srtpath,"/tmp/");
 		strcat(srtpath,start);
 		srtpath[strlen(srtpath)-3]='s';
@@ -906,14 +911,18 @@ handle_request (void *cls,
 		else snprintf(sql, 1023, "SELECT gpstime, value FROM gps WHERE DATETIME(time, 'localtime') >= \"%s\" AND DATETIME(time, 'localtime') < DATETIME(\"%s\", \"+62 seconds\") ORDER BY time ASC", fndate, fndate);
 		FILE *srt = fopen(srtpath, "w+");
 		sqlite3_exec(db, sql, gpslog_cb, (void *)srt, NULL);
+		fseek(srt, 0L, SEEK_END);
+		int srtsize = ftell(srt);
 		fclose(srt);
-		if (dbnull) sqlite3_close(db);
+		releaseGPSDB();
 
-		char cmd[512];
-		snprintf(cmd, 511, "/bin/ffmpeg -i %s -f srt -i %s -c copy -map 0 -map 1:s %s", dpath+1, srtpath, tmppath);
-		system(cmd);
+		if (srtsize > 10){
+			char cmd[512];
+			snprintf(cmd, 511, "/bin/ffmpeg -i %s -f srt -i %s -c copy -map 0 -map 1:s %s", dpath+1, srtpath, tmppath);
+			system(cmd);
 
-		file = fopen(tmppath, "rb");
+			file = fopen(tmppath, "rb");
+		} else file = fopen(dpath+1, "rb");
 		unlink(srtpath);
 		unlink(tmppath);
 	} else
@@ -959,7 +968,7 @@ static void reap(){
 	char oldest[32];
 	char sql[1024];
 	while (1){
-		if (!isfsro() && checkfree() < (100 - 90)){
+		if (ffmpeg > 0 && checkfree() < (100 - 90) && getGPSDB()){
 			if (standalone && !hasRTC) n = scandir(path, &namelist, *filter, alphasort);
 			else n = scandir(path, &namelist, *filter, *compar);
 			if (n < 0) perror("scandir");
@@ -974,14 +983,12 @@ static void reap(){
 				}
 				free(namelist);
 			}
-			if (db == NULL && sqlite3_open("gps.db", &db)) db = NULL;
-			if (db != NULL){
-				oldest[10]=' ';
-				oldest[13]=':';
-				oldest[16]=':';
-				snprintf(sql, 1023, "DELETE FROM gps WHERE time < DATETIME(\"%s\", \"-10 seconds\")", oldest);
-				rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
-			}
+			oldest[10]=' ';
+			oldest[13]=':';
+			oldest[16]=':';
+			snprintf(sql, 1023, "DELETE FROM gps WHERE time < DATETIME(\"%s\", \"-10 seconds\")", oldest);
+			rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
+			releaseGPSDB();
 		}
 		sleep (5*60); // sleep for 5 minutes
 	}
@@ -1074,7 +1081,7 @@ int main (int argc, char *const *argv){
 				kill(ffmpeg, SIGTERM);
 				waitpid(ffmpeg, NULL, 0);
 				ffmpeg = 0;
-				remountfs(0);
+				releaseWritableFS();
 			}
 		}
 		sleep (10);
