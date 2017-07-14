@@ -814,8 +814,6 @@ handle_request (void *cls,
 
 	struct stat buf;
 	int getgpslog = 0;
-	MHD_get_connection_values(connection, MHD_GET_ARGUMENT_KIND, get_gps_cb, &getgpslog);
-	//printf("getgpslog: %d\n", getgpslog);
 
 	if (*con_cls == NULL){
 		struct connection_info_struct *con_info;
@@ -845,6 +843,9 @@ handle_request (void *cls,
 		return MHD_NO;              /* unexpected method */
 
 	if (strstr(url, "favicon") != NULL) return not_found_page(connection); // tell anything asking for favicon to drop dead.
+
+    if (strcmp (method, "GET") == 0)
+        MHD_get_connection_values(connection, MHD_GET_ARGUMENT_KIND, get_gps_cb, &getgpslog);
 
 	if (strcmp (method, "POST") == 0){
 		struct connection_info_struct *con_info = *con_cls;
