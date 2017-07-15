@@ -17,6 +17,7 @@
 #include <sqlite3.h>
 #include <gps.h>
 #include <pthread.h>
+#include <fcntl.h>
 
 #define ERROR404 "<html><head><title>File not found</title></head><body>File not found</body></html>\n\n"
 #define PAGEOK "<html><head><title>OK</title></head><body>OK</body></html>\n\n"
@@ -48,11 +49,20 @@ static pthread_mutex_t fs_mutex;
 static int fs_users = 0;
 static pthread_mutex_t db_mutex;
 static int db_users = 0;
+static pthread_mutex_t tfile_mutex;
+static int tfile_count = 0;
 
 struct connection_info_struct {
 	int connectiontype;
 	char *answerstring;
 	struct MHD_PostProcessor *postprocessor;
+};
+
+struct gpslog_data {
+	FILE *file;
+	long startgpstime;
+	long lastgpstime;
+	int seq;
 };
 
 /**
@@ -90,21 +100,6 @@ not_found_page (struct MHD_Connection *connection){
 }
 
 static int
-send_page (struct MHD_Connection *connection, const char *page){
-	int ret;
-	struct MHD_Response *response;
-
-	response = MHD_create_response_from_buffer (strlen (page), (void *) page, MHD_RESPMEM_PERSISTENT);
-	if (!response)
-		return MHD_NO;
-
-	ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
-	MHD_destroy_response (response);
-
-	return ret;
-}
-
-static int
 isFilesystemRO(){
 	struct statvfs stat;
 	if (statvfs(path, &stat) != 0) return -1;
@@ -114,6 +109,7 @@ isFilesystemRO(){
 
 static void
 remountFS (int writable){
+printf("Setting FS WRITABLE: %d\n",writable);
 	if (writable && standalone)
 		mount(sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_SYNCHRONOUS, NULL);
 	else if (writable)
@@ -167,6 +163,7 @@ int releaseGPSDB(){
 	db_users--;
 	if (db_users < 0) db_users = 0;
 	if (db_users == 0 && db != NULL){
+		printf("CLOSING DB\n");
 		sqlite3_close(db);
 		db = NULL;
 	}
@@ -174,6 +171,14 @@ int releaseGPSDB(){
 	pthread_mutex_unlock(&db_mutex);
 }
 
+int getTFile(){
+	int tfile = 0;
+	pthread_mutex_lock(&tfile_mutex);
+	tfile_count++;
+	tfile = tfile_count;
+	pthread_mutex_unlock(&tfile_mutex);
+	return tfile_count;
+}
 
 int compar(const struct dirent **pa, const struct dirent **pb){
 	const char *a = (*pa)->d_name;
@@ -474,23 +479,27 @@ list (struct MHD_Connection *connection){
 void *gpslog_fn(void *run){
 	int ret;
 	stoplogging = 0;
-	char sqldata[1024];
-	char nmea[1024];
+	char sqldata[4096];
+	char nmea[4096];
+	char *r;
 	timestamp_t gpstime;
 	struct gps_data_t gps_dat;
 	ret = gps_open("localhost", "2947", &gps_dat);
 	(void) gps_stream(&gps_dat, WATCH_ENABLE | WATCH_JSON | WATCH_NMEA, NULL);
-
 	if (getGPSDB()){
 		while (db != NULL && stoplogging == 0){
 			if (gps_waiting (&gps_dat, 2000000)) { // wait up to 2 seconds (2 million us) for data to appear
 				errno = 0;
 				if (gps_read (&gps_dat) != -1) {
 					/* Display data from the GPS receiver. */
-					strcpy(nmea, gps_data(&gps_dat));
-					strchr(nmea, '\r')[0] = 0;
+					int gps_data_len = strlen(gps_data(&gps_dat));
+					strncpy(nmea, gps_data(&gps_dat), 4095);
+					nmea[gps_data_len]=0;
+					r = strchr(nmea, '\r');
+					if (r != NULL) r[0] = 0;
 					if (nmea[0] == '$' && ((long)gps_dat.fix.time) != 0){
-						snprintf(sqldata, 1023, "INSERT INTO gps (gpstime, value) VALUES (%ld, \"%s\")", (long)gps_dat.fix.time, nmea);
+						printf("NMEA: %s\n",nmea);
+						snprintf(sqldata, 4095, "INSERT INTO gps (gpstime, value) VALUES (%ld, \"%s\")", (long)gps_dat.fix.time, nmea);
 						sqlite3_exec(db, sqldata, NULL, NULL, NULL);
 					}
 				}
@@ -498,7 +507,6 @@ void *gpslog_fn(void *run){
 		}
 		releaseGPSDB();
 	}
-
 	(void) gps_stream(&gps_dat, WATCH_DISABLE, NULL);
 	(void) gps_close (&gps_dat);
 }
@@ -667,6 +675,13 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 
 					// This (res) is actually a memory leak, but it should clear up when the child exits.
 					nice(-20);
+
+					// Below stuff with 'fd' makes the ugly ffmpeg spew drop into /dev/null
+					int fd = open("/dev/null", O_WRONLY);
+					dup2(fd, 1);
+					dup2(fd, 2);
+					close(fd);
+
 					if (res != NULL) execv("/bin/ffmpeg",res);
 				}
 				// Below 3 lines will only run if the exec fails.
@@ -759,10 +774,12 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 	return MHD_YES;
 }
 
-long startgpstime=0, lastgpstime=0;
-int seq = 0;
 static int gpslog_cb(void *data, int argc, char **argv, char **colName){
-	FILE *file = (FILE *)data;
+	struct gpslog_data *dstruct = (struct gpslog_data *)data;
+	FILE *file = dstruct->file;
+	long startgpstime=dstruct->startgpstime;
+	long lastgpstime=dstruct->lastgpstime;
+	int seq = dstruct->seq;
 
 	long gpstime;
 	char nmea[1024];
@@ -796,7 +813,9 @@ static int gpslog_cb(void *data, int argc, char **argv, char **colName){
 		lastgpstime = gpstime;
 	}
 	fprintf(file, "%s\n", nmea);
-
+	dstruct->startgpstime=startgpstime;
+	dstruct->lastgpstime=lastgpstime;
+	dstruct->seq=seq;
 	return 0;
 }
 
@@ -811,7 +830,7 @@ handle_request (void *cls,
 		const char *url,
 		const char *method,
 		const char *version,
-		const char *upload_data,
+		const char *udata,
 		size_t *upload_data_size, void **con_cls){
 
 	static int aptr;
@@ -819,10 +838,12 @@ handle_request (void *cls,
 	int ret;
 	FILE *file;
 	int fd;
+	char upload_data[1024];
+	if (*upload_data_size > 0) strncpy(upload_data, udata, *upload_data_size);
+	upload_data[*upload_data_size]=0;
 
 	struct stat buf;
 	int getgpslog = 0;
-
 	if (*con_cls == NULL){
 		struct connection_info_struct *con_info;
 
@@ -846,6 +867,7 @@ handle_request (void *cls,
 		return MHD_YES;
 	}
 
+printf("METHOD: %s, URL: %s, DATA: %s\n",method, url, upload_data);
 
 	if (!(strcmp(method, MHD_HTTP_METHOD_GET) == 0 || strcmp(method, MHD_HTTP_METHOD_POST) == 0))
 		return MHD_NO;              /* unexpected method */
@@ -857,16 +879,21 @@ handle_request (void *cls,
 
 	if (strcmp (method, "POST") == 0){
 		struct connection_info_struct *con_info = *con_cls;
-
 		if (*upload_data_size != 0){
 			MHD_post_process (con_info->postprocessor, upload_data, *upload_data_size);
 			*upload_data_size = 0;
-
 			return MHD_YES;
-		} else if (con_info->answerstring != NULL)
-			return send_page (connection, con_info->answerstring);
+		} else if (con_info->answerstring != NULL){
+        		int ret;
+		        struct MHD_Response *response;
+		        response = MHD_create_response_from_buffer (strlen (con_info->answerstring), (void *) con_info->answerstring, MHD_RESPMEM_PERSISTENT);
+		        if (!response) return MHD_NO;
+		        ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
+		        MHD_destroy_response (response);
+		        return ret;
+		}
+		//return MHD_NO;
 	}
-
 	else if (strcmp(url, "/stop") == 0)
 		return stop(connection);
 	else if (strcmp(url, "/list") == 0)
@@ -884,15 +911,21 @@ handle_request (void *cls,
 	char srtpath[64];
 	char fndate[64];
 	int isprot = 0;
+	char tmppath[64];
 
+	file = fopen (&url[1], "rb");
+        if (file == NULL) return not_found_page (connection);
+	fclose(file);
+printf("VALID FILE IS REQUESTED, gpslog=%d\n",getgpslog);
 	if (getgpslog){
+		int tfile = getTFile();
 		strcpy(dpath, url);
 		start = strrchr(dpath, '/')+1;
 		if (start-dpath > 1) isprot = 1;
 		if (!getGPSDB()) return MHD_NO;
 
-		strcpy(srtpath,"/tmp/");
-		strcat(srtpath,start);
+		snprintf(srtpath, 63, "/tmp/%d_%s", tfile, start);
+
 		srtpath[strlen(srtpath)-3]='s';
 		srtpath[strlen(srtpath)-2]='r';
 		srtpath[strlen(srtpath)-1]='t';
@@ -901,37 +934,42 @@ handle_request (void *cls,
 		fndate[10]=' ';
 		fndate[13]=':';
 		fndate[16]=':';
+		fndate[19]=0;
 
-		char tmppath[64];
-		strcpy(tmppath,"/tmp/");
-		strcat(tmppath,start);
+		snprintf(tmppath, 63, "/tmp/%d_%s", tfile, start);
 
 		sql = malloc(1024);
 		if (isprot) snprintf(sql, 1023, "SELECT gpstime, value FROM prot WHERE filename=\"%s\" ORDER BY time ASC", start);
 		else snprintf(sql, 1023, "SELECT gpstime, value FROM gps WHERE DATETIME(time, 'localtime') >= \"%s\" AND DATETIME(time, 'localtime') < DATETIME(\"%s\", \"+62 seconds\") ORDER BY time ASC", fndate, fndate);
-		FILE *srt = fopen(srtpath, "w+");
-		sqlite3_exec(db, sql, gpslog_cb, (void *)srt, NULL);
-		fseek(srt, 0L, SEEK_END);
-		int srtsize = ftell(srt);
-		fclose(srt);
+		struct gpslog_data *dstruct = malloc(sizeof(struct gpslog_data));
+		dstruct->file = fopen(srtpath, "w+");
+		dstruct->startgpstime=0;
+		dstruct->lastgpstime=0;
+		dstruct->seq=0;
+		sqlite3_exec(db, sql, gpslog_cb, (void *)dstruct, NULL);
+		fseek (dstruct->file, 0L, SEEK_END);
+		int srtsize = ftell(dstruct->file);
+		fclose(dstruct->file);
 		releaseGPSDB();
-
 		if (srtsize > 10){
 			char cmd[512];
-			snprintf(cmd, 511, "/bin/ffmpeg -i %s -f srt -i %s -c copy -map 0 -map 1:s %s", dpath+1, srtpath, tmppath);
+			snprintf(cmd, 511, "/bin/ffmpeg -y -i %s -f srt -i %s -c copy -map 0 -map 1:s %s", dpath+1, srtpath, tmppath);
 			system(cmd);
-
 			file = fopen(tmppath, "rb");
 		} else file = fopen(dpath+1, "rb");
 		unlink(srtpath);
-		unlink(tmppath);
 	} else
 		file = fopen (&url[1], "rb"); // strip the first character "/" from the url, and open that.
 
+	if (file == NULL){
+		if (getgpslog) unlink(tmppath);
+		return not_found_page (connection);
+	}
 	if (file != NULL){
 		fd = fileno (file);
 		if (-1 == fd){
 			(void) fclose (file);
+			if (getgpslog) unlink(tmppath);
 			return MHD_NO; /* internal error */
 		}
 		if ( (0 != fstat (fd, &buf)) || (! S_ISREG (buf.st_mode))){
@@ -945,11 +983,13 @@ handle_request (void *cls,
 		response = MHD_create_response_from_callback (buf.st_size, 32 * 1024, &file_reader, file, &file_free_callback);
 		if (response == NULL){
 			fclose (file);
+			if (getgpslog) unlink(tmppath);
 			return MHD_NO;
 		}
 		ret = MHD_queue_response (connection, MHD_HTTP_OK, response);
 		MHD_destroy_response (response);
 	}
+	if (getgpslog) unlink(tmppath);
 	return ret;
 }
 
@@ -1063,7 +1103,10 @@ int main (int argc, char *const *argv){
 	}
 	chdir(path); // enter data fs
 
+	system("/usr/bin/killall -9 ffmpeg");
+
 	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | 8 /*MHD_USE_INTERNAL_POLLING_THREAD*/ | 1 /*MHD_USE_ERROR_LOG*/, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
+//	d = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
 	if (d == NULL) return 1;
 
 	pthread_create(&reaper_thread, NULL, reap, NULL);
