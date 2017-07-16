@@ -1038,9 +1038,49 @@ static void sig_shutdown(int signal){
 	terminate = 1;
 }
 
+void runner(int standalone, int hasRTC, int useWD){
+	struct MHD_Daemon *d;
+	enum MHD_ValueKind bogus;
+
+	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | 8 /*MHD_USE_INTERNAL_POLLING_THREAD*/ | 1 /*MHD_USE_ERROR_LOG*/, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
+//	d = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
+	if (d == NULL) return;
+
+	pthread_create(&reaper_thread, NULL, reap, NULL);
+
+	if (standalone) iterate_post (NULL, bogus, "record", NULL, NULL, NULL, "", 0, 0);
+
+	lastbark = 0;
+	while (!terminate){
+		//printf("lastbark: %lld\n",(long long) lastbark);
+		if (useWD && ffmpeg != 0 && ((long long) lastbark) < ((long long) time(NULL)) - (3*60)){
+			int status;
+			if (ffmpeg != 0 && waitpid(ffmpeg, &status, WNOHANG) == 0){
+				kill(ffmpeg, SIGTERM);
+				waitpid(ffmpeg, NULL, 0);
+				ffmpeg = 0;
+				releaseWritableFS();
+			}
+		}
+		sleep (10);
+	}
+
+	printf("Shutting everything down\n");
+
+	// stop everything.
+	if (ffmpeg != 0){
+		kill(ffmpeg, SIGTERM);
+		waitpid(ffmpeg, NULL, 0);
+	}
+	MHD_stop_daemon (d);
+	chdir("/");
+	if (db != NULL) sqlite3_close(db);
+}
+
 int main (int argc, char *const *argv){
 	int daemonize = 1;
 	int i;
+	pid_t runner_pid;
 
 	standalone = 0;
 	hasRTC = 0;
@@ -1073,9 +1113,6 @@ int main (int argc, char *const *argv){
 	}
 	if (daemonize) daemon(0,0);
 
-	struct MHD_Daemon *d;
-	enum MHD_ValueKind bogus;
-
 	port = 8888;
 	strcpy(sdev,"/dev/mmcblk0p3");
 	strcpy(path,"/mnt/data");
@@ -1103,41 +1140,16 @@ int main (int argc, char *const *argv){
 	}
 	chdir(path); // enter data fs
 
-	system("/usr/bin/killall -9 ffmpeg");
-
-	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | 8 /*MHD_USE_INTERNAL_POLLING_THREAD*/ | 1 /*MHD_USE_ERROR_LOG*/, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
-//	d = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
-	if (d == NULL) return 1;
-
-	pthread_create(&reaper_thread, NULL, reap, NULL);
-
-	if (standalone) iterate_post (NULL, bogus, "record", NULL, NULL, NULL, "", 0, 0);
-
-	lastbark = 0;
 	while (!terminate){
-		//printf("lastbark: %lld\n",(long long) lastbark);
-		if (useWD && ffmpeg != 0 && ((long long) lastbark) < ((long long) time(NULL)) - (3*60)){
-			int status;
-			if (ffmpeg != 0 && waitpid(ffmpeg, &status, WNOHANG) == 0){
-				kill(ffmpeg, SIGTERM);
-				waitpid(ffmpeg, NULL, 0);
-				ffmpeg = 0;
-				releaseWritableFS();
-			}
-		}
-		sleep (10);
+		system("/usr/bin/killall -9 ffmpeg");
+		sync();
+		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
+		runner_pid = fork();
+		if (runner_pid == 0) runner(standalone, hasRTC, useWD);
+		else if (runner_pid > 0) waitpid(runner_pid, NULL, 0);
+		else sleep(10); // fork failed, sleep for 10 seconds and try again.
 	}
 
-	printf("Shutting everything down\n");
-
-	// stop everything.
-	if (ffmpeg != 0){
-		kill(ffmpeg, SIGTERM);
-		waitpid(ffmpeg, NULL, 0);
-	}
-	MHD_stop_daemon (d);
-	chdir("/");
-	if (db != NULL) sqlite3_close(db);
 	sync();
 	if (umount2(path,0) != 0) printf("UMOUNT2 ERROR!!! errno: %d\n",errno);
 	else printf("UMOUNT2'ed\n");
