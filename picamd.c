@@ -1038,7 +1038,61 @@ static void sig_shutdown(int signal){
 	terminate = 1;
 }
 
-void runner(int standalone, int hasRTC, int useWD){
+int checkOrResetWifi(int wififails){
+	FILE *f;
+	char line[100], rtstr[24], *iface, *dest, *route;
+	int have_def_route = 0;
+	int failed = 0;
+	int ping;
+ 
+	f = fopen("/proc/net/route" , "r");
+ 
+	while(fgets(line, 100, f)){
+		if(strstr(line, "wlan0\t00000000") != NULL){
+			iface = strtok(line, "\t");
+			dest = strtok(NULL, "\t");
+			route = strtok(NULL, "\t");
+			strcpy(rtstr, route);
+ 
+			have_def_route = 1;
+		}
+	}
+	fclose(f);
+
+	if (!have_def_route) failed = 1;
+	if (!failed){
+		int b1, b2, b3, b4;
+		char hbyte[3];
+
+		strncpy(hbyte, rtstr, 2);
+		sscanf(hbyte, "%x", &b1);
+		strncpy(hbyte, rtstr+2, 2);
+                sscanf(hbyte, "%x", &b2);
+		strncpy(hbyte, rtstr+4, 2);
+                sscanf(hbyte, "%x", &b3);
+		strncpy(hbyte, rtstr+6, 2);
+                sscanf(hbyte, "%x", &b4);
+
+		sprintf(line, "/bin/ping -I wlan0 -c2 %d.%d.%d.%d > /dev/null", b4, b3, b2, b1);
+		ping = system(line);
+		if (WEXITSTATUS(ping) != 0) failed = 1;
+	}
+
+	if (failed) wififails++;
+	else wififails = 0;
+
+	if (wififails >= 6){
+		printf("Resetting Wifi...\n");
+		system("/sbin/ifdown --force wlan0");
+		system("/sbin/ifup --force wlan0");
+		wififails = 0;
+	}
+
+	return wififails;
+}
+
+void runner(int standalone, int hasRTC, int useWD, int usingWifi){
+	int wififails = 0;
 	struct MHD_Daemon *d;
 	enum MHD_ValueKind bogus;
 
@@ -1062,6 +1116,7 @@ void runner(int standalone, int hasRTC, int useWD){
 				releaseWritableFS();
 			}
 		}
+		if (usingWifi) wififails = checkOrResetWifi(wififails);
 		sleep (10);
 	}
 
@@ -1081,6 +1136,7 @@ int main (int argc, char *const *argv){
 	int daemonize = 1;
 	int i;
 	pid_t runner_pid;
+	int usewifi = 1;
 
 	standalone = 0;
 	hasRTC = 0;
@@ -1092,6 +1148,7 @@ int main (int argc, char *const *argv){
 	printf("    --standalone    Begin recording automatically.\n");
 	printf("    --rtc           Only use RTC as timesource, do not update from HTTP.\n");
 	printf("    --watchdog      Stop recording automatically if check requests stop.\n");
+	printf("    --notwifi       Dont manage wifi interface, autoreset if won't connect.\n");
 	printf("\n");
 	printf("Warning: --standalone and --watchdog are mutually exclusive parameters.\n\n");
 	printf("MANDATORY Configurations:\n");
@@ -1110,6 +1167,7 @@ int main (int argc, char *const *argv){
 		if (strcmp(argv[i],"--standalone") == 0) standalone = 1;
 		if (strcmp(argv[i],"--rtc") == 0) hasRTC = 1;
 		if (strcmp(argv[i],"--watchdog") == 0) useWD = 1;
+		if (strcmp(argv[i],"--notwifi") == 0) usewifi = 0;
 	}
 	if (daemonize) daemon(0,0);
 
@@ -1145,7 +1203,7 @@ int main (int argc, char *const *argv){
 		sync();
 		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
 		runner_pid = fork();
-		if (runner_pid == 0) runner(standalone, hasRTC, useWD);
+		if (runner_pid == 0) runner(standalone, hasRTC, useWD, usewifi);
 		else if (runner_pid > 0) waitpid(runner_pid, NULL, 0);
 		else sleep(10); // fork failed, sleep for 10 seconds and try again.
 	}
