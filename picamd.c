@@ -18,6 +18,7 @@
 #include <gps.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <signal.h>
 
 #define ERROR404 "<html><head><title>File not found</title></head><body>File not found</body></html>\n\n"
 #define PAGEOK "<html><head><title>OK</title></head><body>OK</body></html>\n\n"
@@ -98,6 +99,17 @@ not_found_page (struct MHD_Connection *connection){
 	MHD_add_response_header (response, MHD_HTTP_HEADER_CONTENT_ENCODING, "text/html");
 	MHD_destroy_response (response);
 	return ret;
+}
+
+void segv_handler(int seg){
+	FILE *out;
+	char cmd[1024];
+	snprintf(cmd, 1023, "/usr/bin/gdb --pid %d 2>&1 >> /tmp/crashlog", getpid());
+	if ((out = popen(cmd, "w")) != NULL){
+		fprintf(out, "set height 0\nbt full\nthread apply all bt full\nquit\n");
+		pclose(out);
+	}
+	exit(127);
 }
 
 static int
@@ -1098,6 +1110,9 @@ void runner(int standalone, int hasRTC, int useWD, int usingWifi){
 	int wififails = 0;
 	struct MHD_Daemon *d;
 	enum MHD_ValueKind bogus;
+
+	signal(SIGSEGV, segv_handler);
+	signal(SIGBUS, segv_handler);
 
 	d = MHD_start_daemon (MHD_USE_THREAD_PER_CONNECTION | 8 /*MHD_USE_INTERNAL_POLLING_THREAD*/ | 1 /*MHD_USE_ERROR_LOG*/, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
 //	d = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY, port, NULL, NULL, &handle_request, ERROR404, MHD_OPTION_END);
