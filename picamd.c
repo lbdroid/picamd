@@ -280,16 +280,16 @@ check (struct MHD_Connection *connection){
 	lastbark = time(NULL);
 
 	if (ffmpeg == 0)
-		snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"not started\" crashcount=\"%d\" />", crashcount);
+		snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"not started\" version=\"%s\" crashcount=\"%d\" />", VERSION, crashcount);
 	else {
 		int status;
 		pid_t pid = waitpid(ffmpeg, &status, WNOHANG);
 		if (pid == 0)
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"running\" crashcount=\"%d\" />", crashcount);
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"running\" version=\"%s\" crashcount=\"%d\" />", VERSION, crashcount);
 		else if (pid < 0)
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" crashcount=\"%d\" />", crashcount);
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" version=\"%s\" crashcount=\"%d\" />", VERSION, crashcount);
 		else
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" crashcount=\"%d\" />", crashcount);
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" version=\"%s\" crashcount=\"%d\" />", VERSION, crashcount);
 	}
 
 	response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
@@ -703,11 +703,11 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				exit(127);
 			} else if (ffmpeg < 0){ // PROCESS FORKING ERROR
 				releaseWritableFS();
-				snprintf(response,100,"<ffmpeg status=\"error\" crashcount=\"%d\" />", crashcount);
+				snprintf(response,100,"<ffmpeg status=\"error\" version=\"%s\" crashcount=\"%d\" />", VERSION, crashcount);
 			} else // PARENT PROCESS
-				snprintf(response,100,"<ffmpeg status=\"running\" crashcount=\"%d\" />", crashcount);
+				snprintf(response,100,"<ffmpeg status=\"running\" version=\"%s\" crashcount=\"%d\" />", VERSION, crashcount);
 		} else
-			snprintf(response,100,"<ffmpeg status=\"running\" crashcount=\"%d\" />", crashcount);
+			snprintf(response,100,"<ffmpeg status=\"running\" version=\"%s\" crashcount=\"%d\" />", VERSION, crashcount);
 	} else if (strcmp(key,"setcams") == 0){
 		int prefix = 0;
 		int i;
@@ -1160,6 +1160,7 @@ int main (int argc, char *const *argv){
 	hasRTC = 0;
 	useWD = 0;
 
+	printf("VERSION: %s\n\n", VERSION);
 	printf("Optional Parameters:\n");
 	printf("--------------------\n");
 	printf("    --nodaemon      Do not daemonize.\n");
