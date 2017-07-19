@@ -1084,7 +1084,7 @@ int checkOrResetWifi(int wififails){
 	if (wififails >= 6){
 		printf("Resetting Wifi...\n");
 		system("/sbin/ifdown --force wlan0");
-		system("/sbin/ifup --force wlan0");
+		system("/sbin/ifup wlan0");
 		wififails = 0;
 	}
 
