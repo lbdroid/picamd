@@ -901,8 +901,6 @@ printf("METHOD: %s, URL: %s, DATA: %s\n",method, url, upload_data);
 		return list(connection);
 	else if (strcmp(url, "/check") == 0)
 		return check(connection);
-//	else if (strcmp(url, "/crashlog") == 0)
-//		return crashlog(connection);
 	else if (strcmp(url, "/getcams") == 0)
 		return getcams(connection);
 	else if (strcmp(url, "/reboot") == 0)
@@ -961,6 +959,8 @@ printf("VALID FILE IS REQUESTED, gpslog=%d\n",getgpslog);
 			file = fopen(tmppath, "rb");
 		} else file = fopen(dpath+1, "rb");
 		unlink(srtpath);
+	} else if (strstr(url, "crashlog") != NULL){
+		file = fopen("/tmp/crashlog", "rb");
 	} else
 		file = fopen (&url[1], "rb"); // strip the first character "/" from the url, and open that.
 
