@@ -51,6 +51,7 @@ static pthread_mutex_t db_mutex;
 static int db_users = 0;
 static pthread_mutex_t tfile_mutex;
 static int tfile_count = 0;
+static int crashcount = 0;
 
 struct connection_info_struct {
 	int connectiontype;
@@ -232,7 +233,7 @@ stop (struct MHD_Connection *connection){
 	int ret;
 
 	if (ffmpeg == 0)
-		snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"not started\" />");
+		snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"not started\" crashcount=\"%d\" />", crashcount);
 	else {
 		int status;
 		pid_t pid = waitpid(ffmpeg, &status, WNOHANG);
@@ -240,11 +241,11 @@ stop (struct MHD_Connection *connection){
 			kill(ffmpeg, SIGTERM);
 			waitpid(ffmpeg, NULL, 0);
 			releaseWritableFS();
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" />");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" crashcount=\"%d\" />", crashcount);
 		} else if (pid < 0)
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" />");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" crashcount=\"%d\" />", crashcount);
 		else
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" />");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" crashcount=\"%d\" />", crashcount);
 		ffmpeg = 0;
 		stoplogging = 1;
 	}
@@ -267,16 +268,16 @@ check (struct MHD_Connection *connection){
 	lastbark = time(NULL);
 
 	if (ffmpeg == 0)
-		snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"not started\" />");
+		snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"not started\" crashcount=\"%d\" />", crashcount);
 	else {
 		int status;
 		pid_t pid = waitpid(ffmpeg, &status, WNOHANG);
 		if (pid == 0)
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"running\" />");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"running\" crashcount=\"%d\" />", crashcount);
 		else if (pid < 0)
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" />");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"error\" crashcount=\"%d\" />", crashcount);
 		else
-			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" />");
+			snprintf(emsg, sizeof(emsg), "<ffmpeg status=\"terminated\" crashcount=\"%d\" />", crashcount);
 	}
 
 	response = MHD_create_response_from_buffer (strlen (emsg), emsg, MHD_RESPMEM_MUST_COPY);
@@ -690,11 +691,11 @@ iterate_post (void *coninfo_cls, enum MHD_ValueKind kind, const char *key,
 				exit(127);
 			} else if (ffmpeg < 0){ // PROCESS FORKING ERROR
 				releaseWritableFS();
-				snprintf(response,100,"<ffmpeg status=\"error\" />");
+				snprintf(response,100,"<ffmpeg status=\"error\" crashcount=\"%d\" />", crashcount);
 			} else // PARENT PROCESS
-				snprintf(response,100,"<ffmpeg status=\"running\" />");
+				snprintf(response,100,"<ffmpeg status=\"running\" crashcount=\"%d\" />", crashcount);
 		} else
-			snprintf(response,100,"<ffmpeg status=\"running\" />");
+			snprintf(response,100,"<ffmpeg status=\"running\" crashcount=\"%d\" />", crashcount);
 	} else if (strcmp(key,"setcams") == 0){
 		int prefix = 0;
 		int i;
@@ -900,6 +901,8 @@ printf("METHOD: %s, URL: %s, DATA: %s\n",method, url, upload_data);
 		return list(connection);
 	else if (strcmp(url, "/check") == 0)
 		return check(connection);
+//	else if (strcmp(url, "/crashlog") == 0)
+//		return crashlog(connection);
 	else if (strcmp(url, "/getcams") == 0)
 		return getcams(connection);
 	else if (strcmp(url, "/reboot") == 0)
@@ -1204,8 +1207,10 @@ int main (int argc, char *const *argv){
 		mount (sdev, path, "ext4", MS_MGC_VAL | MS_REMOUNT | MS_RDONLY, NULL);
 		runner_pid = fork();
 		if (runner_pid == 0) runner(standalone, hasRTC, useWD, usewifi);
-		else if (runner_pid > 0) waitpid(runner_pid, NULL, 0);
-		else sleep(10); // fork failed, sleep for 10 seconds and try again.
+		else if (runner_pid > 0){
+			waitpid(runner_pid, NULL, 0);
+			crashcount++;
+		} else sleep(10); // fork failed, sleep for 10 seconds and try again.
 	}
 
 	sync();
